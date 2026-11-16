@@ -1,7 +1,17 @@
 import { NextResponse } from "next/server";
 import { applyStoreCoupon } from "@/lib/server/store-repository";
+import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
 export async function POST(request: Request) {
+  const clientIp = getClientIp(request);
+  const rateLimit = checkRateLimit(`coupon-apply:${clientIp}`, 15, 60);
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { ok: false, message: `Too many coupon attempts. Please wait ${rateLimit.retryAfterSeconds}s.` },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   try {
     const body = await request.json();
     const { code, subtotal } = body ?? {};

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createCustomerReview, getAllStoreReviews } from "@/lib/server/store-repository";
+import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
 export async function GET(request: Request) {
   try {
@@ -35,6 +36,15 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const clientIp = getClientIp(request);
+  const rateLimit = checkRateLimit(`reviews:${clientIp}`, 5, 120);
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { error: `Too many reviews submitted. Please wait ${rateLimit.retryAfterSeconds}s.` },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   try {
     const body = await request.json();
     const { productId, orderId, customerName, customerPhone, rating, title, comment } = body ?? {};

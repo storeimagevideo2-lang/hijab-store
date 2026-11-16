@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAdminSession } from "@/lib/server/admin-auth";
+import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 import {
   createContactMessage,
   deleteContactMessage,
@@ -17,6 +18,15 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const clientIp = getClientIp(request);
+  const rateLimit = checkRateLimit(`contact:${clientIp}`, 5, 60);
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { ok: false, error: `Too many contact messages sent. Please wait ${rateLimit.retryAfterSeconds}s.` },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   try {
     const body = (await request.json()) as {
       name?: string;

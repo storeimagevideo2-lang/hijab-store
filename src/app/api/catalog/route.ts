@@ -9,9 +9,18 @@ export async function GET() {
       getAllStoreProducts({ bypassCache: true }),
       getStoreSettings(),
     ]);
+
+    // Sanitize internal wholesale cost data from public API response
+    const sanitizedProducts = products.map((p) => {
+      const { costPrice: _cp, lowStockThreshold: _lst, ...publicData } = p;
+      void _cp;
+      void _lst;
+      return publicData;
+    });
+
     return NextResponse.json({
       ok: true,
-      products,
+      products: sanitizedProducts,
       taxonomy: settings.taxonomy,
       contact: {
         email: settings.contactEmail,
