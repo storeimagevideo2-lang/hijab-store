@@ -5736,7 +5736,7 @@ export function AdminDashboard({
                       <RefreshCw size={13} /> Reset Defaults
                     </button>
                     <Link
-                      href="/#home"
+                      href="/"
                       target="_blank"
                       className="adm-btn adm-btn-sm adm-btn-secondary"
                     >

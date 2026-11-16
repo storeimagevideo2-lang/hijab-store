@@ -115,7 +115,7 @@ export function NavigationDrawer({ activePage, categories }: {
         <div className="navigation-drawer-heading"><div><span className="menu-eyebrow">EXPLORE NOOR</span><h2 id="navigation-drawer-title">Menu</h2></div><button type="button" className="icon-button" aria-label="Close menu" onClick={close}><X aria-hidden="true" /></button></div>
         <nav className="navigation-drawer-scroll" aria-label="Menu navigation">
           <ul className="menu-primary-links">
-            <li><Link href="/#home" className="menu-link" aria-current={activePage === "home" ? "page" : undefined} onNavigate={close}>Home<ChevronRight aria-hidden="true" /></Link></li>
+            <li><Link href="/" className="menu-link" aria-current={activePage === "home" ? "page" : undefined} onNavigate={close}>Home<ChevronRight aria-hidden="true" /></Link></li>
             <li><Link href="/shop" className="menu-link" aria-current={activePage === "shop" ? "page" : undefined} onNavigate={close}>Shop All<ChevronRight aria-hidden="true" /></Link></li>
             <li><Link href="/saved" className="menu-link" aria-current={activePage === "saved" ? "page" : undefined} onNavigate={close}>Saved products<ChevronRight aria-hidden="true" /></Link></li>
             <li><Link href="/account" className="menu-link" aria-current={activePage === "account" ? "page" : undefined} onNavigate={close}>My Account<ChevronRight aria-hidden="true" /></Link></li>

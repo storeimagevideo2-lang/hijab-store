@@ -60,7 +60,7 @@ export const topProducts = selectProducts([
 ]);
 
 export const navigation: NavItem[] = [
-  { label: "Home", href: "/#home" },
+  { label: "Home", href: "/" },
   { label: "Shop", href: "/shop" },
   { label: "New Arrivals", href: "/#new-items" },
   { label: "Collections", href: "/#categories" },
