@@ -2508,10 +2508,6 @@ export function AdminDashboard({
                 onChange={(e) => setLoginPassword(e.target.value)}
                 required
               />
-              <small className="adm-hint">
-                Default dev credentials: <strong>admin@noor.com</strong> /{" "}
-                <strong>noor-admin-2026</strong>
-              </small>
             </div>
             <button type="submit" className="adm-btn adm-btn-primary" disabled={loginBusy}>
               <ShieldCheck size={16} aria-hidden="true" />

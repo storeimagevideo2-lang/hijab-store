@@ -141,8 +141,8 @@ export function signupUser(input: {
   if (!cleanEmail || !cleanEmail.includes("@") || !cleanEmail.includes(".")) {
     return { ok: false, error: "A valid email address is required for account creation and password recovery." };
   }
-  if (input.password.length < 4) {
-    return { ok: false, error: "Password must be at least 4 characters long." };
+  if (input.password.length < 8) {
+    return { ok: false, error: "Password must be at least 8 characters long." };
   }
 
   const users = readRegisteredUsers();
@@ -150,14 +150,21 @@ export function signupUser(input: {
     (u) => u.phone === cleanPhone || (cleanEmail && u.email?.toLowerCase() === cleanEmail),
   );
 
+  if (existingIndex >= 0) {
+    return {
+      ok: false,
+      error: "An account with this phone number or email already exists. Please log in instead.",
+    };
+  }
+
   const profile: UserProfile = {
-    id: existingIndex >= 0 ? users[existingIndex].id : `USR-${Date.now().toString().slice(-6)}`,
+    id: `USR-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
     name: cleanName,
     phone: cleanPhone,
     email: cleanEmail,
     address: cleanAddress,
     city: cleanCity,
-    createdAt: existingIndex >= 0 ? users[existingIndex].createdAt : new Date().toISOString(),
+    createdAt: new Date().toISOString(),
   };
 
   const record: StoredUserRecord = { ...profile };
@@ -336,8 +343,8 @@ export async function changeUserPasswordAsync(input: {
   if (!input.currentPassword || !input.newPassword) {
     return { ok: false, error: "Please enter both your current and new password." };
   }
-  if (input.newPassword.length < 4) {
-    return { ok: false, error: "New password must be at least 4 characters long." };
+  if (input.newPassword.length < 8) {
+    return { ok: false, error: "New password must be at least 8 characters long." };
   }
 
   try {

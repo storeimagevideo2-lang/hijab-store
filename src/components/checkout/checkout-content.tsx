@@ -192,6 +192,10 @@ export function CheckoutContent({
     if (!confirmedOrder) return;
 
     if (authModalMode === "signup") {
+      if (modalPassword.length < 8) {
+        setModalError("Password must be at least 8 characters long.");
+        return;
+      }
       const emailToUse = (confirmedOrder.customer.email || modalEmail).trim().toLowerCase();
       if (!emailToUse || !emailToUse.includes("@") || !emailToUse.includes(".")) {
         setModalError("Please enter a valid email address for account security & password recovery.");
@@ -501,13 +505,13 @@ export function CheckoutContent({
                 <div className="checkout-field">
                   <label htmlFor="modal-auth-password">
                     <Lock size={13} aria-hidden="true" />{" "}
-                    {authModalMode === "signup" ? "Choose a Password (min 4 characters) *" : "Your Password *"}
+                    {authModalMode === "signup" ? "Choose a Password (min 8 characters) *" : "Your Password *"}
                   </label>
                   <input
                     id="modal-auth-password"
                     type="password"
                     required
-                    minLength={4}
+                    minLength={authModalMode === "signup" ? 8 : 4}
                     placeholder="Enter password"
                     value={modalPassword}
                     onChange={(event) => setModalPassword(event.target.value)}

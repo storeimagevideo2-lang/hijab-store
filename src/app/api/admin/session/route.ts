@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import {
@@ -47,10 +48,14 @@ export async function POST(request: Request) {
       );
     }
 
-    if (
-      email.toLowerCase() !== config.adminEmail.toLowerCase() ||
-      password !== config.adminPassword
-    ) {
+    const emailMatch = email.toLowerCase() === config.adminEmail.toLowerCase();
+    const candidateBuf = Buffer.from(password);
+    const expectedBuf = Buffer.from(config.adminPassword);
+    const passwordMatch =
+      candidateBuf.length === expectedBuf.length &&
+      timingSafeEqual(candidateBuf, expectedBuf);
+
+    if (!emailMatch || !passwordMatch) {
       return NextResponse.json(
         { error: "Invalid admin email or password." },
         { status: 401 },

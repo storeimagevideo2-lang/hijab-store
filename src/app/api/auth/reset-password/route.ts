@@ -6,6 +6,15 @@ import {
 import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
 export async function GET(request: Request) {
+  const clientIp = getClientIp(request);
+  const rateLimit = checkRateLimit(`verify-reset-code:${clientIp}`, 10, 300);
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { ok: false, error: `Too many verification attempts. Please wait ${rateLimit.retryAfterSeconds}s.` },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   const { searchParams } = new URL(request.url);
   const token = searchParams.get("token") || searchParams.get("code") || "";
 
@@ -47,9 +56,9 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!newPassword || newPassword.length < 4) {
+    if (!newPassword || newPassword.length < 8) {
       return NextResponse.json(
-        { ok: false, error: "New password must be at least 4 characters long." },
+        { ok: false, error: "New password must be at least 8 characters long." },
         { status: 400 },
       );
     }

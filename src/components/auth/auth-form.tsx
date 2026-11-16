@@ -237,7 +237,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
           <div className="auth-field">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
               <label htmlFor="auth-password" style={{ margin: 0 }}>
-                {mode === "login" ? "Password *" : "Create Password (min 4 characters) *"}
+                {mode === "login" ? "Password *" : "Create Password (min 8 characters) *"}
               </label>
               {mode === "login" && (
                 <Link
@@ -258,7 +258,7 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
                 id="auth-password"
                 type={showPassword ? "text" : "password"}
                 required
-                minLength={4}
+                minLength={mode === "signup" ? 8 : 4}
                 autoComplete={mode === "login" ? "current-password" : "new-password"}
                 placeholder="Enter your password"
                 value={password}

@@ -1915,7 +1915,9 @@ async function validateOrderStock(items: Order["items"]): Promise<void> {
   for (const item of items) {
     const qty = Math.max(1, Math.round(Number(item.quantity ?? 1)));
     const prod = allProducts.find((p) => p.id === item.id || p.slug === item.slug);
-    if (!prod) continue;
+    if (!prod) {
+      throw new Error(`Item "${item.name || item.id}" was not found in our product catalog.`);
+    }
     if (prod.status === "inactive") {
       throw new Error(`Sorry, "${prod.name}" is currently unavailable.`);
     }
@@ -2065,6 +2067,12 @@ export async function recordCustomerOrder(
   order: Order & Partial<Pick<AdminOrderRecord, "discountAmount" | "couponCode" | "paymentStatus" | "deliveryStatus">>,
 ): Promise<{ storage: "supabase" | "local"; order: AdminOrderRecord }> {
   const normalized = normalizeOrderRecord(order);
+
+  // Enforce strong unguessable high-entropy Order ID (Prevents IDOR Order Enumeration)
+  if (!normalized.id || normalized.id.length < 10 || /^NR-\d{1,6}$/.test(normalized.id)) {
+    normalized.id = `NR-${Date.now().toString(36).toUpperCase()}-${randomBytes(4).toString("hex").toUpperCase()}`;
+  }
+
   await validateOrderStock(normalized.items);
 
   // Authoritative Server-Side Price & Total Recalculation (Anti-Price-Tampering Guard)
@@ -2075,10 +2083,10 @@ export async function recordCustomerOrder(
   let recalculatedSubtotal = 0;
   const verifiedItems = normalized.items.map((item) => {
     const catalogProduct = productMap.get(item.id);
-    let authoritativePrice = item.price;
-    if (catalogProduct && typeof catalogProduct.price === "number") {
-      authoritativePrice = catalogProduct.price;
+    if (!catalogProduct || typeof catalogProduct.price !== "number") {
+      throw new Error(`Invalid item in cart: "${item.name || item.id}". This item is not in our product catalog.`);
     }
+    const authoritativePrice = catalogProduct.price;
     const safeQty = Math.max(1, Math.floor(Number(item.quantity) || 1));
     recalculatedSubtotal += authoritativePrice * safeQty;
     return {
@@ -3380,6 +3388,63 @@ function verifyCustomerPassword(stored: string, candidate: string): boolean {
   return stored === candidate;
 }
 
+export async function registerCustomerAccount(input: {
+  name: string;
+  phone: string;
+  email?: string;
+  address?: string;
+  city?: string;
+  password: string;
+}): Promise<
+  | { ok: true; user: Omit<CustomerAccountRecord, "password"> }
+  | { ok: false; error: string; code?: "ALREADY_EXISTS" }
+> {
+  if (!input.password || input.password.length < 8) {
+    return { ok: false, error: "Password must be at least 8 characters long." };
+  }
+
+  const local = await readLocalStore();
+  const accounts = await getCustomerAccounts();
+  const cleanPhone = normalizePhoneForMatch(input.phone);
+  const cleanEmail = input.email?.trim().toLowerCase() || undefined;
+
+  const existing = accounts.find((u) => {
+    const phoneMatches = normalizePhoneForMatch(u.phone) === cleanPhone;
+    const emailMatches = Boolean(cleanEmail && u.email?.toLowerCase() === cleanEmail);
+    return phoneMatches || emailMatches;
+  });
+
+  if (existing) {
+    const isPhoneConflict = normalizePhoneForMatch(existing.phone) === cleanPhone;
+    return {
+      ok: false,
+      error: isPhoneConflict
+        ? "An account is already registered with this phone number. Please sign in instead."
+        : "An account is already registered with this email address. Please sign in instead.",
+      code: "ALREADY_EXISTS",
+    };
+  }
+
+  const randomSuffix = randomBytes(4).toString("hex").toUpperCase();
+  const record: CustomerAccountRecord = {
+    id: `USR-${Date.now().toString(36).toUpperCase()}-${randomSuffix}`,
+    name: input.name.trim(),
+    phone: input.phone.trim(),
+    email: cleanEmail,
+    address: input.address?.trim() || undefined,
+    city: input.city?.trim() || undefined,
+    password: hashCustomerPassword(input.password),
+    createdAt: new Date().toISOString(),
+  };
+
+  accounts.unshift(record);
+  await saveCustomerAccounts(local, accounts);
+
+  const { password: _pw, ...profile } = record;
+  void _pw;
+  return { ok: true, user: profile };
+}
+
 export async function upsertCustomerAccount(input: {
   id?: string;
   name: string;
@@ -3480,8 +3545,8 @@ export async function changeCustomerAccountPassword(input: {
   if (!verifyCustomerPassword(current.password, input.currentPassword)) {
     return { ok: false, error: "Your current password is incorrect." };
   }
-  if (!input.newPassword || input.newPassword.length < 4) {
-    return { ok: false, error: "New password must be at least 4 characters." };
+  if (!input.newPassword || input.newPassword.length < 8) {
+    return { ok: false, error: "New password must be at least 8 characters long." };
   }
   accounts[idx] = {
     ...current,
@@ -3571,8 +3636,8 @@ export async function resetCustomerPassword(
 ): Promise<{ ok: true; email: string; name: string } | { ok: false; error: string }> {
   const clean = tokenOrCode.trim();
   if (!clean) return { ok: false, error: "Reset token or code is required." };
-  if (!newPassword || newPassword.length < 4) {
-    return { ok: false, error: "New password must be at least 4 characters long." };
+  if (!newPassword || newPassword.length < 8) {
+    return { ok: false, error: "New password must be at least 8 characters long." };
   }
 
   const local = await readLocalStore();
@@ -3660,8 +3725,8 @@ export async function adminResetCustomerPassword(input: {
   phone?: string;
   newPassword: string;
 }): Promise<{ ok: true; user: Omit<CustomerAccountRecord, "password"> } | { ok: false; error: string }> {
-  if (!input.newPassword || input.newPassword.trim().length < 4) {
-    return { ok: false, error: "New password must be at least 4 characters." };
+  if (!input.newPassword || input.newPassword.trim().length < 8) {
+    return { ok: false, error: "New password must be at least 8 characters long." };
   }
   const local = await readLocalStore();
   const accounts = await getCustomerAccounts();

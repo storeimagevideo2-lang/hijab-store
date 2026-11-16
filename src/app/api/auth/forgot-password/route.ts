@@ -26,12 +26,23 @@ export async function POST(request: Request) {
 
     const resetReq = await createPasswordResetRequest(email);
     if (!resetReq.ok) {
-      return NextResponse.json({ ok: false, error: resetReq.error }, { status: 404 });
+      // Prevent Email Enumeration: Always return standard message even if account does not exist
+      return NextResponse.json({
+        ok: true,
+        message: "If an account is associated with this email, a password reset link and verification code have been sent.",
+      });
     }
 
-    const host = request.headers.get("x-forwarded-host") || request.headers.get("host") || "localhost:3000";
-    const protocol = host.includes("localhost") ? "http" : "https";
-    const resetUrl = `${protocol}://${host}/reset-password?token=${encodeURIComponent(resetReq.token)}`;
+    // Determine Base URL securely (Prevent Host Header Poisoning)
+    let baseUrl = process.env.NEXT_PUBLIC_SITE_URL || process.env.SITE_URL;
+    if (!baseUrl) {
+      const forwardedHost = request.headers.get("x-forwarded-host");
+      const host = (forwardedHost ? forwardedHost.split(",")[0].trim() : request.headers.get("host")) || "localhost:3000";
+      const cleanHost = host.replace(/[^a-zA-Z0-9.:_-]/g, "");
+      const protocol = cleanHost.includes("localhost") || cleanHost.startsWith("127.") ? "http" : "https";
+      baseUrl = `${protocol}://${cleanHost}`;
+    }
+    const resetUrl = `${baseUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(resetReq.token)}`;
 
     const emailResult = await sendPasswordResetEmail({
       to: resetReq.email,
@@ -40,17 +51,21 @@ export async function POST(request: Request) {
       resetCode: resetReq.code,
     });
 
+    // In production, NEVER expose devPreview, reset codes, or tokens in the API response!
+    const isDevelopment = process.env.NODE_ENV !== "production";
+
     return NextResponse.json({
       ok: true,
-      message: `A password reset link and verification code have been sent to ${email}.`,
-      devMode: emailResult.devMode,
-      devPreview: emailResult.devMode
-        ? {
-            code: resetReq.code,
-            token: resetReq.token,
-            resetUrl,
-          }
-        : undefined,
+      message: "If an account is associated with this email, a password reset link and verification code have been sent.",
+      devMode: isDevelopment && emailResult.devMode,
+      devPreview:
+        isDevelopment && emailResult.devMode
+          ? {
+              code: resetReq.code,
+              token: resetReq.token,
+              resetUrl,
+            }
+          : undefined,
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to process forgot password request.";

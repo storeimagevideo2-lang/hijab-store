@@ -29,8 +29,8 @@ export function ResetPasswordForm() {
       return;
     }
 
-    if (newPassword.length < 4) {
-      setError("Password must be at least 4 characters long.");
+    if (newPassword.length < 8) {
+      setError("Password must be at least 8 characters long.");
       return;
     }
 
@@ -132,13 +132,13 @@ export function ResetPasswordForm() {
           </div>
 
           <div className="auth-field">
-            <label htmlFor="reset-new-password">New Password (min 4 characters) *</label>
+            <label htmlFor="reset-new-password">New Password (min 8 characters) *</label>
             <div className="auth-password-wrap">
               <input
                 id="reset-new-password"
                 type={showPassword ? "text" : "password"}
                 required
-                minLength={4}
+                minLength={8}
                 autoComplete="new-password"
                 placeholder="Enter new password"
                 value={newPassword}
@@ -165,7 +165,7 @@ export function ResetPasswordForm() {
                 id="reset-confirm-password"
                 type={showPassword ? "text" : "password"}
                 required
-                minLength={4}
+                minLength={8}
                 autoComplete="new-password"
                 placeholder="Re-enter new password"
                 value={confirmPassword}

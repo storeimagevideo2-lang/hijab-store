@@ -121,7 +121,9 @@ export function placeOrder(
   input: Omit<Order, "id" | "createdAt" | "status"> & { status?: OrderStatus },
 ) {
   const current = snapshot();
-  const code = String(Date.now()).slice(-6);
+  const timestampPart = Date.now().toString(36).toUpperCase();
+  const randomPart = Math.random().toString(36).substring(2, 7).toUpperCase();
+  const orderId = `NR-${timestampPart}-${randomPart}`;
 
   // Cash on Delivery and new customer orders start in "Pending" status
   // Only after backend admin confirmation does it show "Confirmed"
@@ -131,7 +133,7 @@ export function placeOrder(
 
   const order: Order = {
     ...input,
-    id: `NR-${code}`,
+    id: orderId,
     createdAt: new Date().toISOString(),
     status: initialStatus,
     paymentStatus: input.paymentStatus ?? initialPaymentStatus,

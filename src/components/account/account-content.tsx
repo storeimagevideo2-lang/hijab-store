@@ -678,6 +678,10 @@ export function AccountContent({ catalog = catalogProducts }: { catalog?: Catalo
     event.preventDefault();
     setPwError("");
     setPwSuccess("");
+    if (newPassword.length < 8) {
+      setPwError("New password must be at least 8 characters long.");
+      return;
+    }
     if (newPassword !== confirmPassword) {
       setPwError("New password and confirmation do not match.");
       return;
@@ -1004,11 +1008,11 @@ export function AccountContent({ catalog = catalogProducts }: { catalog?: Catalo
                     />
                   </label>
                   <label>
-                    <span>New Password (min 4 characters) *</span>
+                    <span>New Password (min 8 characters) *</span>
                     <input
                       type="password"
                       required
-                      minLength={4}
+                      minLength={8}
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                     />
@@ -1018,7 +1022,7 @@ export function AccountContent({ catalog = catalogProducts }: { catalog?: Catalo
                     <input
                       type="password"
                       required
-                      minLength={4}
+                      minLength={8}
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
                     />

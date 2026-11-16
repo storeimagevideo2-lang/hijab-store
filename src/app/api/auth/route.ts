@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import {
   changeCustomerAccountPassword,
+  registerCustomerAccount,
   updateCustomerAccountProfile,
-  upsertCustomerAccount,
   verifyCustomerAccount,
 } from "@/lib/server/store-repository";
 import {
@@ -58,14 +58,13 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      if (!body.password || body.password.length < 4) {
+      if (!body.password || body.password.length < 8) {
         return NextResponse.json(
-          { ok: false, error: "Password must be at least 4 characters long." },
+          { ok: false, error: "Password must be at least 8 characters long." },
           { status: 400 },
         );
       }
-      const user = await upsertCustomerAccount({
-        id: body.id,
+      const registerResult = await registerCustomerAccount({
         name: body.name,
         phone: body.phone,
         email: body.email,
@@ -73,6 +72,15 @@ export async function POST(request: Request) {
         city: body.city,
         password: body.password,
       });
+
+      if (!registerResult.ok) {
+        return NextResponse.json(
+          { ok: false, error: registerResult.error },
+          { status: registerResult.code === "ALREADY_EXISTS" ? 409 : 400 },
+        );
+      }
+
+      const user = registerResult.user;
 
       await setCustomerSessionCookie({
         userId: user.id,
@@ -176,6 +184,13 @@ export async function POST(request: Request) {
       if (!body.id || !body.currentPassword || !body.newPassword) {
         return NextResponse.json(
           { ok: false, error: "Current password and new password are required." },
+          { status: 400 },
+        );
+      }
+
+      if (body.newPassword.length < 8) {
+        return NextResponse.json(
+          { ok: false, error: "New password must be at least 8 characters long." },
           { status: 400 },
         );
       }
