@@ -12,9 +12,8 @@ export type UserProfile = {
   createdAt: string;
 };
 
-type StoredUserRecord = UserProfile & {
-  password: string;
-};
+// Passwords must NEVER be stored in localStorage. All authentication is verified server-side.
+type StoredUserRecord = UserProfile;
 
 const SESSION_KEY = "noor:auth-user:v1";
 const USERS_KEY = "noor:registered-users:v1";
@@ -72,7 +71,22 @@ function readRegisteredUsers(): StoredUserRecord[] {
   try {
     const raw = window.localStorage.getItem(USERS_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? (parsed as StoredUserRecord[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    // Sanitize any legacy plain-text passwords that might remain in browser storage
+    let hadLegacyPasswords = false;
+    const sanitized = parsed.map((item) => {
+      if (item && typeof item === "object" && "password" in item) {
+        hadLegacyPasswords = true;
+        const copy = { ...item } as Record<string, unknown>;
+        delete copy.password;
+        return copy as StoredUserRecord;
+      }
+      return item as StoredUserRecord;
+    });
+    if (hadLegacyPasswords) {
+      writeRegisteredUsers(sanitized);
+    }
+    return sanitized;
   } catch {
     return [];
   }
@@ -146,7 +160,7 @@ export function signupUser(input: {
     createdAt: existingIndex >= 0 ? users[existingIndex].createdAt : new Date().toISOString(),
   };
 
-  const record: StoredUserRecord = { ...profile, password: input.password };
+  const record: StoredUserRecord = { ...profile };
   if (existingIndex >= 0) {
     users[existingIndex] = record;
   } else {
@@ -215,41 +229,15 @@ export async function signupUserAsync(input: {
   return localResult;
 }
 
-export function loginUser(input: {
+export function loginUser(_input: {
   identifier: string;
   password: string;
 }): { ok: true; user: UserProfile } | { ok: false; error: string } {
-  const cleanId = input.identifier.trim().toLowerCase();
-  if (!cleanId || !input.password) {
-    return { ok: false, error: "Please enter your phone/email and password." };
-  }
-
-  const users = readRegisteredUsers();
-  const match = users.find(
-    (u) => u.phone.toLowerCase() === cleanId || (u.email && u.email.toLowerCase() === cleanId),
-  );
-
-  if (!match) {
-    return {
-      ok: false,
-      error: "No account found with this phone or email. Please sign up first or continue as a guest.",
-    };
-  }
-  if (match.password !== input.password) {
-    return { ok: false, error: "Incorrect password. Please try again." };
-  }
-
-  const profile: UserProfile = {
-    id: match.id,
-    name: match.name,
-    phone: match.phone,
-    email: match.email,
-    address: match.address,
-    city: match.city,
-    createdAt: match.createdAt,
+  void _input;
+  return {
+    ok: false,
+    error: "Please use loginUserAsync for secure server-verified authentication.",
   };
-  writeSessionUser(profile);
-  return { ok: true, user: profile };
 }
 
 export async function loginUserAsync(input: {
@@ -275,7 +263,7 @@ export async function loginUserAsync(input: {
     if (res.ok && data.ok && data.user) {
       const users = readRegisteredUsers();
       const idx = users.findIndex((u) => u.id === data.user!.id || u.phone === data.user!.phone);
-      const record: StoredUserRecord = { ...data.user, password: input.password };
+      const record: StoredUserRecord = { ...data.user };
       if (idx >= 0) {
         users[idx] = record;
       } else {
@@ -285,27 +273,15 @@ export async function loginUserAsync(input: {
       writeSessionUser(data.user);
       return { ok: true, user: data.user };
     }
-    // If server returned 401 and local storage has a matching user (e.g. created before server sync), check local fallback
-    const localAttempt = loginUser(input);
-    if (localAttempt.ok) {
-      // Push local account to server so future logins work across devices
-      void fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "signup",
-          ...localAttempt.user,
-          password: input.password,
-        }),
-      }).catch(() => {});
-      return localAttempt;
-    }
     return {
       ok: false,
-      error: data.error || localAttempt.error,
+      error: data.error || "Invalid phone/email or password.",
     };
   } catch {
-    return loginUser(input);
+    return {
+      ok: false,
+      error: "Network error during login. Please check your connection and try again.",
+    };
   }
 }
 
@@ -380,21 +356,21 @@ export async function changeUserPasswordAsync(input: {
     if (!res.ok || !data.ok) {
       return { ok: false, error: data.error || "Could not update password." };
     }
+    return { ok: true };
   } catch {
-    // Fallback to local update if offline
+    return { ok: false, error: "Network error updating password. Please try again." };
   }
-
-  const users = readRegisteredUsers();
-  const idx = users.findIndex((u) => u.id === current.id || u.phone === current.phone);
-  if (idx >= 0) {
-    users[idx] = { ...users[idx], password: input.newPassword };
-    writeRegisteredUsers(users);
-  }
-  return { ok: true };
 }
 
 export function logoutUser() {
   writeSessionUser(null);
+  if (typeof window !== "undefined") {
+    void fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "logout" }),
+    }).catch(() => {});
+  }
 }
 
 export async function requestPasswordResetAsync(email: string): Promise<{

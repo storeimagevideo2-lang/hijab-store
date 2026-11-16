@@ -1,9 +1,21 @@
+import { randomBytes } from "node:crypto";
+
 function isRealValue(value: string | undefined): value is string {
   if (!value) return false;
   const trimmed = value.trim();
   if (!trimmed) return false;
   if (trimmed.startsWith("your-") || trimmed.includes("your-project-id")) return false;
   return true;
+}
+
+// Memory-resident ephemeral secret if ADMIN_SESSION_SECRET is omitted in environment,
+// ensuring predictable hardcoded fallback keys never compromise production sessions.
+let ephemeralAdminSecret: string | null = null;
+function getEphemeralAdminSecret(): string {
+  if (!ephemeralAdminSecret) {
+    ephemeralAdminSecret = randomBytes(32).toString("hex");
+  }
+  return ephemeralAdminSecret;
 }
 
 export function getBackendConfig() {
@@ -16,8 +28,8 @@ export function getBackendConfig() {
   const cloudinaryApiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
 
   const adminEmail = process.env.ADMIN_EMAIL?.trim() || "admin@noor.com";
-  const adminPassword = process.env.ADMIN_PASSWORD?.trim() || "noor-admin-2026";
-  const adminSecret = process.env.ADMIN_SESSION_SECRET?.trim() || "noor-hijab-default-session-secret-2026";
+  const adminPassword = process.env.ADMIN_PASSWORD?.trim() || "";
+  const adminSecret = process.env.ADMIN_SESSION_SECRET?.trim() || getEphemeralAdminSecret();
 
   const supabaseConfigured =
     isRealValue(supabaseUrl) &&

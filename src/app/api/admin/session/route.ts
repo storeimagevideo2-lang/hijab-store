@@ -6,6 +6,7 @@ import {
   getAdminSession,
 } from "@/lib/server/admin-auth";
 import { getBackendConfig } from "@/lib/server/env";
+import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
 export async function GET() {
   const session = await getAdminSession();
@@ -17,18 +18,34 @@ export async function GET() {
       supabaseConfigured: config.supabaseConfigured,
       supabaseWriteConfigured: config.supabaseWriteConfigured,
       cloudinaryConfigured: config.cloudinaryConfigured,
-      defaultAdminEmail: config.adminEmail,
+      defaultAdminEmail: session ? config.adminEmail : "admin@noor.com",
     },
   });
 }
 
 export async function POST(request: Request) {
+  const clientIp = getClientIp(request);
+  const rateLimit = checkRateLimit(`admin-login:${clientIp}`, 5, 60);
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { error: `Too many login attempts. Please wait ${rateLimit.retryAfterSeconds}s before retrying.` },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   try {
     const body = (await request.json()) as { email?: string; password?: string };
     const config = getBackendConfig();
 
     const email = (body.email ?? "").trim();
     const password = body.password ?? "";
+
+    if (!config.adminPassword) {
+      return NextResponse.json(
+        { error: "Admin login is disabled until ADMIN_PASSWORD is set in environment." },
+        { status: 500 },
+      );
+    }
 
     if (
       email.toLowerCase() !== config.adminEmail.toLowerCase() ||
@@ -44,6 +61,7 @@ export async function POST(request: Request) {
     const cookieStore = await cookies();
     cookieStore.set(ADMIN_COOKIE_NAME, token, {
       httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 7, // 7 days

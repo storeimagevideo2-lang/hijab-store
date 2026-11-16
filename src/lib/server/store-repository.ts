@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -2066,6 +2066,57 @@ export async function recordCustomerOrder(
 ): Promise<{ storage: "supabase" | "local"; order: AdminOrderRecord }> {
   const normalized = normalizeOrderRecord(order);
   await validateOrderStock(normalized.items);
+
+  // Authoritative Server-Side Price & Total Recalculation (Anti-Price-Tampering Guard)
+  // Ensures clients cannot inject modified unit prices, fake coupons, or altered order totals
+  const allProducts = await getAllStoreProducts();
+  const productMap = new Map(allProducts.map((p) => [p.id, p]));
+
+  let recalculatedSubtotal = 0;
+  const verifiedItems = normalized.items.map((item) => {
+    const catalogProduct = productMap.get(item.id);
+    let authoritativePrice = item.price;
+    if (catalogProduct && typeof catalogProduct.price === "number") {
+      authoritativePrice = catalogProduct.price;
+    }
+    const safeQty = Math.max(1, Math.floor(Number(item.quantity) || 1));
+    recalculatedSubtotal += authoritativePrice * safeQty;
+    return {
+      ...item,
+      price: authoritativePrice,
+      quantity: safeQty,
+    };
+  });
+
+  normalized.items = verifiedItems;
+  normalized.subtotal = recalculatedSubtotal;
+
+  let verifiedDiscount = 0;
+  let verifiedCouponCode: string | null = null;
+  if (normalized.couponCode) {
+    const coupons = await getStoreCoupons();
+    const cleanCode = normalized.couponCode.trim().toUpperCase();
+    const matchedCoupon = coupons.find((c) => c.code.toUpperCase() === cleanCode && c.active);
+    if (matchedCoupon && recalculatedSubtotal >= (matchedCoupon.minOrderAmount || 0)) {
+      verifiedCouponCode = matchedCoupon.code;
+      if (matchedCoupon.discountType === "percentage") {
+        verifiedDiscount = Math.round((recalculatedSubtotal * matchedCoupon.discountValue) / 100);
+      } else {
+        verifiedDiscount = Math.min(recalculatedSubtotal, matchedCoupon.discountValue);
+      }
+    }
+  }
+  normalized.discountAmount = verifiedDiscount;
+  normalized.couponCode = verifiedCouponCode;
+
+  const currentSettings = await getStoreSettings();
+  const authoritativeShipping =
+    normalized.deliveryZone === "inside-dhaka"
+      ? currentSettings.insideDhakaShippingFee
+      : currentSettings.outsideDhakaShippingFee;
+  normalized.shippingFee = authoritativeShipping;
+  normalized.total = Math.max(0, recalculatedSubtotal - verifiedDiscount + authoritativeShipping);
+
   const config = getBackendConfig();
   let storage: "supabase" | "local" = "local";
 
@@ -3302,14 +3353,29 @@ async function saveCustomerAccounts(
 }
 
 function hashCustomerPassword(raw: string): string {
-  if (raw.startsWith("sha256:")) return raw;
-  const digest = createHash("sha256").update(`noor-salt-v1:${raw}`).digest("hex");
-  return `sha256:${digest}`;
+  if (raw.startsWith("scrypt:") || raw.startsWith("sha256:")) return raw;
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(raw, salt, 64).toString("hex");
+  return `scrypt:${salt}:${hash}`;
 }
 
 function verifyCustomerPassword(stored: string, candidate: string): boolean {
+  if (stored.startsWith("scrypt:")) {
+    const [, salt, originalHash] = stored.split(":");
+    if (!salt || !originalHash) return false;
+    try {
+      const candidateHash = scryptSync(candidate, salt, 64).toString("hex");
+      const a = Buffer.from(candidateHash, "hex");
+      const b = Buffer.from(originalHash, "hex");
+      if (a.length !== b.length) return false;
+      return timingSafeEqual(a, b);
+    } catch {
+      return false;
+    }
+  }
   if (stored.startsWith("sha256:")) {
-    return stored === hashCustomerPassword(candidate);
+    const legacyDigest = createHash("sha256").update(`noor-salt-v1:${candidate}`).digest("hex");
+    return stored === `sha256:${legacyDigest}`;
   }
   return stored === candidate;
 }

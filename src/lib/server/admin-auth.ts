@@ -6,7 +6,8 @@ export const ADMIN_COOKIE_NAME = "noor_admin_session";
 
 function signToken(email: string): string {
   const { adminSecret } = getBackendConfig();
-  const payload = Buffer.from(JSON.stringify({ email, role: "admin" })).toString("base64url");
+  const exp = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days expiration
+  const payload = Buffer.from(JSON.stringify({ email, role: "admin", exp })).toString("base64url");
   const signature = createHmac("sha256", adminSecret).update(payload).digest("base64url");
   return `${payload}.${signature}`;
 }
@@ -17,13 +18,18 @@ export function verifyAdminToken(token: string | undefined): { email: string } |
   if (!payload || !signature) return null;
 
   const { adminSecret, adminEmail } = getBackendConfig();
+  if (!adminSecret) return null;
   const expectedSig = createHmac("sha256", adminSecret).update(payload).digest("base64url");
 
   try {
     const a = Buffer.from(signature);
     const b = Buffer.from(expectedSig);
     if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
-    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { email?: string };
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      email?: string;
+      exp?: number;
+    };
+    if (typeof parsed.exp === "number" && Date.now() > parsed.exp) return null;
     if (!parsed.email || parsed.email.toLowerCase() !== adminEmail.toLowerCase()) return null;
     return { email: parsed.email };
   } catch {

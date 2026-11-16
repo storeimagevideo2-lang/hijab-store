@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
+import { getAdminSession } from "@/lib/server/admin-auth";
 import { checkCourierFraud } from "@/lib/server/courier";
 
 export async function GET(request: Request) {
+  const session = await getAdminSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized. Admin session required." }, { status: 401 });
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const phone = searchParams.get("phone") || "";
@@ -19,6 +25,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const session = await getAdminSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized. Admin session required." }, { status: 401 });
+  }
+
   try {
     const body = (await request.json().catch(() => ({}))) as { phone?: string };
     const phone = body.phone || "";

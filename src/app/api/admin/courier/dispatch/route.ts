@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
+import { getAdminSession } from "@/lib/server/admin-auth";
 import { dispatchOrderToCourier } from "@/lib/server/courier";
 
 export async function POST(request: Request) {
+  const session = await getAdminSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized. Admin session required." }, { status: 401 });
+  }
+
   try {
     const body = (await request.json().catch(() => ({}))) as { orderId?: string };
     const orderId = body.orderId?.trim();

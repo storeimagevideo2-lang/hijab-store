@@ -3,6 +3,7 @@ import {
   resetCustomerPassword,
   verifyPasswordResetTokenOrCode,
 } from "@/lib/server/store-repository";
+import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -21,6 +22,15 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const clientIp = getClientIp(request);
+  const rateLimit = checkRateLimit(`reset-pwd:${clientIp}`, 5, 300);
+  if (!rateLimit.success) {
+    return NextResponse.json(
+      { ok: false, error: `Too many password reset attempts. Please wait ${rateLimit.retryAfterSeconds}s.` },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   try {
     const body = (await request.json().catch(() => ({}))) as {
       tokenOrCode?: string;
