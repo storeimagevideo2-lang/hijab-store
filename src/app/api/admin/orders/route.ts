@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getAdminSession } from "@/lib/server/admin-auth";
 import {
   getAllStoreOrders,
+  getPaginatedStoreOrders,
+  getStoreOrdersByIds,
   updateStoreOrder,
   type AdminDeliveryStatus,
   type AdminOrderStatus,
@@ -55,14 +57,31 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
+  const pageParam = searchParams.get("page");
   const limitParam = searchParams.get("limit");
   const offsetParam = searchParams.get("offset");
+  const status = searchParams.get("status") ?? undefined;
+  const paymentStatus = searchParams.get("paymentStatus") ?? undefined;
+  const paymentMethod = searchParams.get("paymentMethod") ?? undefined;
+  const search = searchParams.get("search") ?? undefined;
+
+  if (pageParam || status || paymentStatus || paymentMethod || search) {
+    const result = await getPaginatedStoreOrders({
+      page: pageParam ? Number(pageParam) : 1,
+      limit: limitParam ? Number(limitParam) : 20,
+      status,
+      paymentStatus,
+      paymentMethod,
+      search,
+    });
+    return NextResponse.json({ ok: true, ...result });
+  }
 
   const limit = limitParam ? Math.max(1, Math.min(500, Number(limitParam))) : undefined;
   const offset = offsetParam ? Math.max(0, Number(offsetParam)) : undefined;
 
   const orders = await getAllStoreOrders({ limit, offset });
-  return NextResponse.json({ orders });
+  return NextResponse.json({ ok: true, orders, total: orders.length });
 }
 
 export async function PATCH(request: Request) {
@@ -93,8 +112,8 @@ export async function PATCH(request: Request) {
     }
 
     if (body.status) {
-      const existingOrders = await getAllStoreOrders({ limit: 500 });
-      const currentOrder = existingOrders.find((o) => o.id === body.id);
+      const existingOrders = await getStoreOrdersByIds([body.id]);
+      const currentOrder = existingOrders[0];
       if (currentOrder && currentOrder.status !== body.status) {
         const allowedNext = ALLOWED_STATUS_TRANSITIONS[currentOrder.status] ?? [];
         if (!allowedNext.includes(body.status)) {

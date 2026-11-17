@@ -1201,13 +1201,46 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   padding-top: 14px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
   font-size: 12px;
   color: var(--muted);
 }
 
-.adm-pagination-btns,
+.adm-pagination-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.adm-pagination-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.adm-pagination-size select {
+  min-width: 60px;
+}
+
+.adm-pagination-ellipsis {
+  padding: 0 4px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.adm-pagination-btns {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .adm-row-btns {
   display: flex;
   align-items: center;

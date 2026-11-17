@@ -1837,20 +1837,49 @@ export async function getAllStoreOrders(options?: {
 
   if (config.supabaseWriteConfigured) {
     try {
-      let endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&order=created_at.desc`;
+      // When explicit limit/offset is requested, fetch single slice
       if (options?.limit) {
-        endpoint += `&limit=${options.limit}`;
-      }
-      if (options?.offset) {
-        endpoint += `&offset=${options.offset}`;
-      }
-      const response = await fetch(endpoint, {
-        headers: supabaseHeaders(true),
-        cache: "no-store",
-      });
-      if (response.ok) {
-        const rows = (await response.json()) as SupabaseOrderRow[];
-        return rows.map(parseSupabaseOrderRow);
+        let endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&order=created_at.desc&limit=${options.limit}`;
+        if (options.offset) {
+          endpoint += `&offset=${options.offset}`;
+        }
+        const response = await fetch(endpoint, {
+          headers: supabaseHeaders(true),
+          cache: "no-store",
+        });
+        if (response.ok) {
+          const rows = (await response.json()) as SupabaseOrderRow[];
+          return rows.map(parseSupabaseOrderRow);
+        }
+      } else {
+        // Fetch past Supabase PostgREST's 1,000-row cap in 1,000-row batches (up to 10,000)
+        const PAGE_SIZE = 1000;
+        const MAX_BATCHES = 10;
+        const allRows: SupabaseOrderRow[] = [];
+        let start = options?.offset ?? 0;
+
+        for (let batch = 0; batch < MAX_BATCHES; batch++) {
+          const end = start + PAGE_SIZE - 1;
+          const endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&order=created_at.desc`;
+          const response = await fetch(endpoint, {
+            headers: {
+              ...supabaseHeaders(true),
+              Range: `${start}-${end}`,
+            },
+            cache: "no-store",
+          });
+          if (!response.ok) {
+            if (batch === 0) throw new Error(`Supabase orders fetch failed (${response.status})`);
+            break;
+          }
+          const rows = (await response.json()) as SupabaseOrderRow[];
+          allRows.push(...rows);
+          if (rows.length < PAGE_SIZE) {
+            break;
+          }
+          start += PAGE_SIZE;
+        }
+        return allRows.map(parseSupabaseOrderRow);
       }
     } catch {
       // Fallback to local store
@@ -1866,6 +1895,130 @@ export async function getAllStoreOrders(options?: {
     orders = orders.slice(0, options.limit);
   }
   return orders;
+}
+
+export type PaginatedOrdersResult = {
+  orders: AdminOrderRecord[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+};
+
+function sanitizePostgrestSearch(raw: string): string {
+  // Strip PostgREST filter syntax characters to prevent filter injection
+  return raw.trim().replace(/[(),*%\\]/g, "");
+}
+
+export async function getPaginatedStoreOrders(options: {
+  page?: number;
+  limit?: number;
+  status?: string;
+  paymentStatus?: string;
+  paymentMethod?: string;
+  search?: string;
+}): Promise<PaginatedOrdersResult> {
+  const page = Math.max(1, Math.floor(Number(options.page) || 1));
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 20)));
+  const offset = (page - 1) * limit;
+  const status = options.status?.trim();
+  const paymentStatus = options.paymentStatus?.trim();
+  const paymentMethod = options.paymentMethod?.trim();
+  const rawSearch = options.search?.trim() || "";
+  const safeSearch = sanitizePostgrestSearch(rawSearch);
+
+  const config = getBackendConfig();
+
+  if (config.supabaseWriteConfigured) {
+    try {
+      const params: string[] = [
+        "select=*",
+        "order=created_at.desc",
+        `limit=${limit}`,
+        `offset=${offset}`,
+      ];
+      if (status && status !== "ALL" && status !== "all") {
+        params.push(`status=eq.${encodeURIComponent(status)}`);
+      }
+      if (paymentStatus && paymentStatus !== "ALL" && paymentStatus !== "all") {
+        params.push(`payment_status=eq.${encodeURIComponent(paymentStatus)}`);
+      }
+      if (paymentMethod && paymentMethod !== "ALL" && paymentMethod !== "all") {
+        params.push(`payment_method=eq.${encodeURIComponent(paymentMethod)}`);
+      }
+      if (safeSearch) {
+        const pattern = encodeURIComponent(`*${safeSearch}*`);
+        params.push(
+          `or=(id.ilike.${pattern},customer_name.ilike.${pattern},customer_phone.ilike.${pattern},customer_city.ilike.${pattern},customer_address.ilike.${pattern})`,
+        );
+      }
+
+      const endpoint = `${config.supabaseUrl}/rest/v1/orders?${params.join("&")}`;
+      const response = await fetch(endpoint, {
+        headers: {
+          ...supabaseHeaders(true),
+          Prefer: "count=exact",
+        },
+        cache: "no-store",
+      });
+
+      if (response.ok) {
+        const rows = (await response.json()) as SupabaseOrderRow[];
+        const contentRange = response.headers.get("content-range") || "";
+        const totalMatch = contentRange.match(/\/(\d+)$/);
+        const total = totalMatch ? Number(totalMatch[1]) : offset + rows.length;
+        const totalPages = Math.max(1, Math.ceil(total / limit));
+        return {
+          orders: rows.map(parseSupabaseOrderRow),
+          total,
+          page: Math.min(page, totalPages),
+          limit,
+          totalPages,
+        };
+      }
+    } catch {
+      // Fallback to local store
+    }
+  }
+
+  const local = await readLocalStore();
+  const q = rawSearch.toLowerCase();
+  const filtered = local.orders.filter((order) => {
+    if (status && status !== "ALL" && status !== "all" && order.status !== status) return false;
+    if (
+      paymentStatus &&
+      paymentStatus !== "ALL" &&
+      paymentStatus !== "all" &&
+      order.paymentStatus !== paymentStatus
+    ) {
+      return false;
+    }
+    if (
+      paymentMethod &&
+      paymentMethod !== "ALL" &&
+      paymentMethod !== "all" &&
+      order.paymentMethod !== paymentMethod
+    ) {
+      return false;
+    }
+    if (q) {
+      const hay = `${order.id} ${order.customer.name} ${order.customer.phone} ${order.customer.city} ${order.courierTrackingCode || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * limit;
+  return {
+    orders: filtered.slice(start, start + limit),
+    total,
+    page: safePage,
+    limit,
+    totalPages,
+  };
 }
 
 export function normalizePhoneForMatch(phone?: string | null): string {

@@ -66,6 +66,7 @@ import {
   SalesAnalyticsChart,
 } from "./admin-charts";
 import { AdminKpiGrid } from "./admin-kpi-grid";
+import { AdminPagination } from "./admin-pagination";
 import { trackTestPing } from "@/lib/fpixel";
 import type {
   DashboardAnalyticsResponse,
@@ -409,8 +410,32 @@ export function AdminDashboard({
   const [orderPaymentFilter, setOrderPaymentFilter] = useState<string>("all");
   const [orderSort, setOrderSort] = useState<"newest" | "oldest" | "highest" | "lowest">("newest");
   const [orderPage, setOrderPage] = useState(1);
+  const [orderPageSize, setOrderPageSize] = useState(20);
+  const [serverOrders, setServerOrders] = useState<AdminOrderRecord[] | null>(null);
+  const [serverOrdersTotal, setServerOrdersTotal] = useState<number>(initialOrders.length);
+  const [serverOrdersLoading, setServerOrdersLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<AdminOrderRecord | null>(null);
   const [showManualOrderModal, setShowManualOrderModal] = useState(false);
+
+  // Pagination & Search States for Products, Inventory, Customers, Contact Inquiries, Reviews
+  const [productPage, setProductPage] = useState(1);
+  const [productPageSize, setProductPageSize] = useState(20);
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const [inventoryPageSize, setInventoryPageSize] = useState(20);
+  const [registeredCustomerSearch, setRegisteredCustomerSearch] = useState("");
+  const [registeredCustomerPage, setRegisteredCustomerPage] = useState(1);
+  const [registeredCustomerPageSize, setRegisteredCustomerPageSize] = useState(10);
+  const [contactSearch, setContactSearch] = useState("");
+  const [contactStatusFilter, setContactStatusFilter] = useState<"all" | "unread" | "resolved">(
+    "all",
+  );
+  const [contactPage, setContactPage] = useState(1);
+  const [contactPageSize, setContactPageSize] = useState(10);
+  const [topCustomerSearch, setTopCustomerSearch] = useState("");
+  const [topCustomerPage, setTopCustomerPage] = useState(1);
+  const [topCustomerPageSize, setTopCustomerPageSize] = useState(10);
+  const [reviewPage, setReviewPage] = useState(1);
+  const [reviewPageSize, setReviewPageSize] = useState(10);
 
   // Manual Order Form State
   const [manualCustomerName, setManualCustomerName] = useState("");
@@ -2389,12 +2414,74 @@ export function AdminDashboard({
     });
   }, [orders, orderSearch, globalSearch, orderStatusFilter, orderPaymentFilter, orderSort]);
 
-  const ORDERS_PER_PAGE = 8;
-  const totalOrderPages = Math.max(1, Math.ceil(filteredOrders.length / ORDERS_PER_PAGE));
-  const paginatedOrders = filteredOrders.slice(
-    (orderPage - 1) * ORDERS_PER_PAGE,
-    orderPage * ORDERS_PER_PAGE,
+  // True Server-Side Pagination for the Orders Tab (supports 10,000+ orders directly from Supabase)
+  useEffect(() => {
+    if (!authenticated || activeSection !== "orders") return;
+    const controller = new AbortController();
+    const q = (orderSearch || globalSearch).trim();
+
+    const timer = window.setTimeout(async () => {
+      setServerOrdersLoading(true);
+      try {
+        const params = new URLSearchParams({
+          page: String(orderPage),
+          limit: String(orderPageSize),
+        });
+        if (orderStatusFilter !== "all") params.set("status", orderStatusFilter);
+        if (orderPaymentFilter !== "all") params.set("paymentStatus", orderPaymentFilter);
+        if (q) params.set("search", q);
+
+        const res = await fetch(`/api/admin/orders?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          ok?: boolean;
+          orders?: AdminOrderRecord[];
+          total?: number;
+        };
+        if (Array.isArray(data.orders)) {
+          setServerOrders(data.orders);
+          setServerOrdersTotal(typeof data.total === "number" ? data.total : data.orders.length);
+        }
+      } catch (err) {
+        if ((err as Error)?.name !== "AbortError") {
+          // Keep existing client slice on transient network error
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setServerOrdersLoading(false);
+        }
+      }
+    }, q ? 250 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    authenticated,
+    activeSection,
+    orderPage,
+    orderPageSize,
+    orderStatusFilter,
+    orderPaymentFilter,
+    orderSearch,
+    globalSearch,
+    orders,
+  ]);
+
+  const safeOrderPage = Math.min(
+    orderPage,
+    Math.max(1, Math.ceil(filteredOrders.length / orderPageSize)),
   );
+  const paginatedOrders = filteredOrders.slice(
+    (safeOrderPage - 1) * orderPageSize,
+    safeOrderPage * orderPageSize,
+  );
+  const displayedOrders = serverOrders ?? paginatedOrders;
+  const displayedOrdersTotal = serverOrders !== null ? serverOrdersTotal : filteredOrders.length;
 
   // Sorted Best Selling Products
   const sortedBestSellers = useMemo(() => {
@@ -2406,7 +2493,7 @@ export function AdminDashboard({
     );
   }, [analytics.tables.bestSellingProducts, bestSellerSort]);
 
-  // Filtered Variant Inventory
+  // Filtered & Paginated Variant Inventory
   const filteredVariants = useMemo(() => {
     const q = (inventorySearch || globalSearch).trim().toLowerCase();
     return analytics.tables.variantInventory.filter((v) => {
@@ -2421,7 +2508,16 @@ export function AdminDashboard({
     });
   }, [analytics.tables.variantInventory, inventoryFilter, inventorySearch, globalSearch]);
 
-  // Filtered Catalog Products
+  const safeInventoryPage = Math.min(
+    inventoryPage,
+    Math.max(1, Math.ceil(filteredVariants.length / inventoryPageSize)),
+  );
+  const paginatedVariants = filteredVariants.slice(
+    (safeInventoryPage - 1) * inventoryPageSize,
+    safeInventoryPage * inventoryPageSize,
+  );
+
+  // Filtered & Paginated Catalog Products
   const filteredCatalogProducts = useMemo(() => {
     const q = (productCatalogSearch || globalSearch).trim().toLowerCase();
     return products.filter((p) => {
@@ -2438,6 +2534,94 @@ export function AdminDashboard({
       );
     });
   }, [products, productCatalogSearch, productCategoryFilter, globalSearch]);
+
+  const safeProductPage = Math.min(
+    productPage,
+    Math.max(1, Math.ceil(filteredCatalogProducts.length / productPageSize)),
+  );
+  const paginatedCatalogProducts = filteredCatalogProducts.slice(
+    (safeProductPage - 1) * productPageSize,
+    safeProductPage * productPageSize,
+  );
+
+  // Filtered & Paginated Registered Customers
+  const filteredRegisteredCustomers = useMemo(() => {
+    const q = (registeredCustomerSearch || globalSearch).trim().toLowerCase();
+    if (!q) return registeredCustomers;
+    return registeredCustomers.filter(
+      (acct) =>
+        acct.name.toLowerCase().includes(q) ||
+        acct.phone.toLowerCase().includes(q) ||
+        (acct.email ?? "").toLowerCase().includes(q) ||
+        (acct.city ?? "").toLowerCase().includes(q) ||
+        acct.id.toLowerCase().includes(q),
+    );
+  }, [registeredCustomers, registeredCustomerSearch, globalSearch]);
+
+  const safeRegisteredCustomerPage = Math.min(
+    registeredCustomerPage,
+    Math.max(1, Math.ceil(filteredRegisteredCustomers.length / registeredCustomerPageSize)),
+  );
+  const paginatedRegisteredCustomers = filteredRegisteredCustomers.slice(
+    (safeRegisteredCustomerPage - 1) * registeredCustomerPageSize,
+    safeRegisteredCustomerPage * registeredCustomerPageSize,
+  );
+
+  // Filtered & Paginated Customer Contact Inquiries
+  const filteredContactMessages = useMemo(() => {
+    const q = (contactSearch || globalSearch).trim().toLowerCase();
+    return contactMessages.filter((msg) => {
+      if (contactStatusFilter !== "all" && msg.status !== contactStatusFilter) return false;
+      if (!q) return true;
+      return (
+        msg.name.toLowerCase().includes(q) ||
+        msg.contact.toLowerCase().includes(q) ||
+        msg.topic.toLowerCase().includes(q) ||
+        msg.message.toLowerCase().includes(q)
+      );
+    });
+  }, [contactMessages, contactSearch, contactStatusFilter, globalSearch]);
+
+  const safeContactPage = Math.min(
+    contactPage,
+    Math.max(1, Math.ceil(filteredContactMessages.length / contactPageSize)),
+  );
+  const paginatedContactMessages = filteredContactMessages.slice(
+    (safeContactPage - 1) * contactPageSize,
+    safeContactPage * contactPageSize,
+  );
+
+  // Filtered & Paginated Top Customers Directory
+  const filteredTopCustomers = useMemo(() => {
+    const q = (topCustomerSearch || globalSearch).trim().toLowerCase();
+    if (!q) return analytics.tables.topCustomers;
+    return analytics.tables.topCustomers.filter(
+      (cust) =>
+        cust.name.toLowerCase().includes(q) ||
+        cust.city.toLowerCase().includes(q) ||
+        cust.phoneMasked.toLowerCase().includes(q) ||
+        (cust.isReturning ? "returning" : "new buyer").includes(q),
+    );
+  }, [analytics.tables.topCustomers, topCustomerSearch, globalSearch]);
+
+  const safeTopCustomerPage = Math.min(
+    topCustomerPage,
+    Math.max(1, Math.ceil(filteredTopCustomers.length / topCustomerPageSize)),
+  );
+  const paginatedTopCustomers = filteredTopCustomers.slice(
+    (safeTopCustomerPage - 1) * topCustomerPageSize,
+    safeTopCustomerPage * topCustomerPageSize,
+  );
+
+  // Paginated Reviews
+  const safeReviewPage = Math.min(
+    reviewPage,
+    Math.max(1, Math.ceil(filteredReviews.length / reviewPageSize)),
+  );
+  const paginatedReviews = filteredReviews.slice(
+    (safeReviewPage - 1) * reviewPageSize,
+    safeReviewPage * reviewPageSize,
+  );
 
   const previewProduct = {
     id: editingId || "preview-item",
@@ -3169,30 +3353,14 @@ export function AdminDashboard({
                       </table>
                     </div>
 
-                    <div className="adm-pagination">
-                      <span>
-                        Showing page {orderPage} of {totalOrderPages} ({filteredOrders.length}{" "}
-                        orders)
-                      </span>
-                      <div className="adm-pagination-btns">
-                        <button
-                          type="button"
-                          className="adm-btn adm-btn-sm adm-btn-secondary"
-                          disabled={orderPage <= 1}
-                          onClick={() => setOrderPage((p) => Math.max(1, p - 1))}
-                        >
-                          Previous
-                        </button>
-                        <button
-                          type="button"
-                          className="adm-btn adm-btn-sm adm-btn-secondary"
-                          disabled={orderPage >= totalOrderPages}
-                          onClick={() => setOrderPage((p) => Math.min(totalOrderPages, p + 1))}
-                        >
-                          Next
-                        </button>
-                      </div>
-                    </div>
+                    <AdminPagination
+                      page={safeOrderPage}
+                      pageSize={orderPageSize}
+                      totalItems={filteredOrders.length}
+                      itemLabel="orders"
+                      onPageChange={setOrderPage}
+                      onPageSizeChange={setOrderPageSize}
+                    />
                   </>
                 )}
               </section>
@@ -3904,12 +4072,18 @@ export function AdminDashboard({
                       className="adm-input-sm"
                       placeholder="Filter by title, SKU, colour…"
                       value={productCatalogSearch}
-                      onChange={(e) => setProductCatalogSearch(e.target.value)}
+                      onChange={(e) => {
+                        setProductCatalogSearch(e.target.value);
+                        setProductPage(1);
+                      }}
                     />
                     <select
                       className="adm-select-sm"
                       value={productCategoryFilter}
-                      onChange={(e) => setProductCategoryFilter(e.target.value)}
+                      onChange={(e) => {
+                        setProductCategoryFilter(e.target.value);
+                        setProductPage(1);
+                      }}
                     >
                       <option value="all">All Categories</option>
                       {taxonomy.categories.map((cat) => (
@@ -3952,7 +4126,7 @@ export function AdminDashboard({
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredCatalogProducts.map((product) => {
+                      {paginatedCatalogProducts.map((product) => {
                         const colMeta = resolveColourMeta(product.colour, taxonomy.colours);
                         const catLabel =
                           taxonomy.categories.find((c) => c.value === product.category)?.label ??
@@ -4070,6 +4244,15 @@ export function AdminDashboard({
                     </tbody>
                   </table>
                 </div>
+
+                <AdminPagination
+                  page={safeProductPage}
+                  pageSize={productPageSize}
+                  totalItems={filteredCatalogProducts.length}
+                  itemLabel="products"
+                  onPageChange={setProductPage}
+                  onPageSizeChange={setProductPageSize}
+                />
               </div>
             </div>
           )}
@@ -4148,9 +4331,9 @@ export function AdminDashboard({
               <div className="adm-panel">
                 <div className="adm-panel-head">
                   <div>
-                    <h3>Order Management ({filteredOrders.length})</h3>
+                    <h3>Order Management ({displayedOrdersTotal.toLocaleString()})</h3>
                     <p className="adm-panel-sub">
-                      Search, filter, update order/payment/delivery statuses, and process refunds
+                      Server-paginated orders — search, filter, update statuses, and process refunds
                     </p>
                   </div>
                   <div className="adm-table-controls">
@@ -4211,31 +4394,32 @@ export function AdminDashboard({
                   </div>
                 </div>
 
-                {filteredOrders.length === 0 ? (
+                {displayedOrders.length === 0 && !serverOrdersLoading ? (
                   <div className="adm-empty-state">
                     <ShoppingCart size={28} />
                     <h4>No Orders Found</h4>
                     <p>No orders match the current filters.</p>
                   </div>
                 ) : (
-                  <div className="adm-table-scroll">
-                    <table className="adm-table">
-                      <thead>
-                        <tr>
-                          <th>Order ID</th>
-                          <th>Customer</th>
-                          <th>Items</th>
-                          <th>Date</th>
-                          <th>Total</th>
-                          <th>Refunded</th>
-                          <th>Payment Status</th>
-                          <th>Order Status</th>
-                          <th>Delivery Status</th>
-                          <th>Details</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredOrders.map((order) => (
+                  <>
+                    <div className="adm-table-scroll">
+                      <table className="adm-table">
+                        <thead>
+                          <tr>
+                            <th>Order ID</th>
+                            <th>Customer</th>
+                            <th>Items</th>
+                            <th>Date</th>
+                            <th>Total</th>
+                            <th>Refunded</th>
+                            <th>Payment Status</th>
+                            <th>Order Status</th>
+                            <th>Delivery Status</th>
+                            <th>Details</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {displayedOrders.map((order) => (
                           <tr key={order.id}>
                             <td>
                               <strong>{order.id}</strong>
@@ -4392,6 +4576,17 @@ export function AdminDashboard({
                       </tbody>
                     </table>
                   </div>
+
+                  <AdminPagination
+                    page={orderPage}
+                    pageSize={orderPageSize}
+                    totalItems={displayedOrdersTotal}
+                    itemLabel="orders"
+                    loading={serverOrdersLoading}
+                    onPageChange={setOrderPage}
+                    onPageSizeChange={setOrderPageSize}
+                  />
+                  </>
                 )}
               </div>
             </div>
@@ -4411,40 +4606,58 @@ export function AdminDashboard({
                   <div>
                     <h3>
                       Registered Customer Accounts &amp; Password Reset (
-                      {registeredCustomers.length})
+                      {filteredRegisteredCustomers.length})
                     </h3>
                     <p className="adm-panel-sub">
                       Manage registered storefront accounts and reset passwords when a customer
                       forgets theirs
                     </p>
                   </div>
+                  <div className="adm-table-controls">
+                    <input
+                      type="search"
+                      className="adm-input-sm"
+                      placeholder="Search name, phone, email, city…"
+                      value={registeredCustomerSearch}
+                      onChange={(e) => {
+                        setRegisteredCustomerSearch(e.target.value);
+                        setRegisteredCustomerPage(1);
+                      }}
+                    />
+                  </div>
                 </div>
 
-                {registeredCustomers.length === 0 ? (
+                {filteredRegisteredCustomers.length === 0 ? (
                   <div className="adm-empty-state">
                     <Users size={28} />
-                    <h4>No Registered Customer Accounts Yet</h4>
+                    <h4>
+                      {registeredCustomerSearch
+                        ? "No Matching Accounts"
+                        : "No Registered Customer Accounts Yet"}
+                    </h4>
                     <p>
-                      Customers who sign up on the `/account` page will appear here for account
-                      support and password resets.
+                      {registeredCustomerSearch
+                        ? "Try a different search query."
+                        : "Customers who sign up on the `/account` page will appear here for account support and password resets."}
                     </p>
                   </div>
                 ) : (
-                  <div className="adm-table-scroll">
-                    <table className="adm-table">
-                      <thead>
-                        <tr>
-                          <th>Account ID</th>
-                          <th>Customer Name</th>
-                          <th>Phone</th>
-                          <th>Email</th>
-                          <th>Address &amp; City</th>
-                          <th>Joined</th>
-                          <th>Password Reset</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {registeredCustomers.map((acct) => {
+                  <>
+                    <div className="adm-table-scroll">
+                      <table className="adm-table">
+                        <thead>
+                          <tr>
+                            <th>Account ID</th>
+                            <th>Customer Name</th>
+                            <th>Phone</th>
+                            <th>Email</th>
+                            <th>Address &amp; City</th>
+                            <th>Joined</th>
+                            <th>Password Reset</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paginatedRegisteredCustomers.map((acct) => {
                           const isResetting = resettingCustomerId === acct.id;
                           return (
                             <tr key={acct.id}>
@@ -4519,6 +4732,15 @@ export function AdminDashboard({
                       </tbody>
                     </table>
                   </div>
+                  <AdminPagination
+                    page={safeRegisteredCustomerPage}
+                    pageSize={registeredCustomerPageSize}
+                    totalItems={filteredRegisteredCustomers.length}
+                    itemLabel="accounts"
+                    onPageChange={setRegisteredCustomerPage}
+                    onPageSizeChange={setRegisteredCustomerPageSize}
+                  />
+                  </>
                 )}
               </div>
 
@@ -4527,36 +4749,71 @@ export function AdminDashboard({
                 <div className="adm-panel-head">
                   <div>
                     <h3>
-                      Customer Contact Inquiries ({contactMessages.length} total ·{" "}
+                      Customer Contact Inquiries ({filteredContactMessages.length} shown ·{" "}
                       {unreadContactMessagesCount} unread)
                     </h3>
                     <p className="adm-panel-sub">
                       Messages submitted by customers on the `/contact` page
                     </p>
                   </div>
+                  <div className="adm-table-controls">
+                    <input
+                      type="search"
+                      className="adm-input-sm"
+                      placeholder="Search sender, topic, message…"
+                      value={contactSearch}
+                      onChange={(e) => {
+                        setContactSearch(e.target.value);
+                        setContactPage(1);
+                      }}
+                    />
+                    <select
+                      className="adm-select-sm"
+                      value={contactStatusFilter}
+                      onChange={(e) => {
+                        setContactStatusFilter(e.target.value as "all" | "unread" | "resolved");
+                        setContactPage(1);
+                      }}
+                    >
+                      <option value="all">All Messages ({contactMessages.length})</option>
+                      <option value="unread">Unread ({unreadContactMessagesCount})</option>
+                      <option value="resolved">
+                        Resolved ({contactMessages.length - unreadContactMessagesCount})
+                      </option>
+                    </select>
+                  </div>
                 </div>
 
-                {contactMessages.length === 0 ? (
+                {filteredContactMessages.length === 0 ? (
                   <div className="adm-empty-state">
                     <MessageSquare size={28} />
-                    <h4>No Contact Messages Yet</h4>
-                    <p>Inquiries submitted via the Contact Us page will appear here.</p>
+                    <h4>
+                      {contactSearch || contactStatusFilter !== "all"
+                        ? "No Matching Messages"
+                        : "No Contact Messages Yet"}
+                    </h4>
+                    <p>
+                      {contactSearch || contactStatusFilter !== "all"
+                        ? "No inquiries match your search or status filter."
+                        : "Inquiries submitted via the Contact Us page will appear here."}
+                    </p>
                   </div>
                 ) : (
-                  <div className="adm-table-scroll">
-                    <table className="adm-table">
-                      <thead>
-                        <tr>
-                          <th>Status</th>
-                          <th>Sender</th>
-                          <th>Topic</th>
-                          <th>Message</th>
-                          <th>Received</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {contactMessages.map((msg) => (
+                  <>
+                    <div className="adm-table-scroll">
+                      <table className="adm-table">
+                        <thead>
+                          <tr>
+                            <th>Status</th>
+                            <th>Sender</th>
+                            <th>Topic</th>
+                            <th>Message</th>
+                            <th>Received</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paginatedContactMessages.map((msg) => (
                           <tr key={msg.id}>
                             <td>
                               <span
@@ -4621,42 +4878,70 @@ export function AdminDashboard({
                       </tbody>
                     </table>
                   </div>
+                  <AdminPagination
+                    page={safeContactPage}
+                    pageSize={contactPageSize}
+                    totalItems={filteredContactMessages.length}
+                    itemLabel="messages"
+                    onPageChange={setContactPage}
+                    onPageSizeChange={setContactPageSize}
+                  />
+                  </>
                 )}
               </div>
 
               <div className="adm-panel">
                 <div className="adm-panel-head">
                   <div>
-                    <h3>Top Customers &amp; Retention Directory</h3>
+                    <h3>
+                      Top Customers &amp; Retention Directory ({filteredTopCustomers.length})
+                    </h3>
                     <p className="adm-panel-sub">
                       Privacy-protected customer insights derived from order history
                     </p>
                   </div>
+                  <div className="adm-table-controls">
+                    <input
+                      type="search"
+                      className="adm-input-sm"
+                      placeholder="Search customer, city, segment…"
+                      value={topCustomerSearch}
+                      onChange={(e) => {
+                        setTopCustomerSearch(e.target.value);
+                        setTopCustomerPage(1);
+                      }}
+                    />
+                  </div>
                 </div>
 
-                {analytics.tables.topCustomers.length === 0 ? (
+                {filteredTopCustomers.length === 0 ? (
                   <div className="adm-empty-state">
                     <Users size={28} />
-                    <h4>0 Customers Recorded</h4>
-                    <p>Customer profiles are automatically built as orders are placed.</p>
+                    <h4>{topCustomerSearch ? "No Matching Customers" : "0 Customers Recorded"}</h4>
+                    <p>
+                      {topCustomerSearch
+                        ? "Try a different search term."
+                        : "Customer profiles are automatically built as orders are placed."}
+                    </p>
                   </div>
                 ) : (
-                  <div className="adm-table-scroll">
-                    <table className="adm-table">
-                      <thead>
-                        <tr>
-                          <th>Customer Name</th>
-                          <th>Protected Contact</th>
-                          <th>City</th>
-                          <th>Segment</th>
-                          <th>Total Orders</th>
-                          <th>Total Spending</th>
-                          <th>Average Order Value</th>
-                          <th>Last Order Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {analytics.tables.topCustomers.map((cust) => (
+                  <>
+                    <div className="adm-table-scroll">
+                      <table className="adm-table">
+                        <thead>
+                          <tr>
+                            <th>Customer Name</th>
+                            <th>Protected Contact</th>
+                            <th>City</th>
+                            <th>Segment</th>
+                            <th>Total Orders</th>
+                            <th>Total Spending</th>
+                            <th>Average Order Value</th>
+                            <th>Last Order Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paginatedTopCustomers.map((cust) => (
                           <tr key={cust.customerKey}>
                             <td>
                               <strong>{cust.name}</strong>
@@ -4683,6 +4968,15 @@ export function AdminDashboard({
                       </tbody>
                     </table>
                   </div>
+                  <AdminPagination
+                    page={safeTopCustomerPage}
+                    pageSize={topCustomerPageSize}
+                    totalItems={filteredTopCustomers.length}
+                    itemLabel="customers"
+                    onPageChange={setTopCustomerPage}
+                    onPageSizeChange={setTopCustomerPageSize}
+                  />
+                  </>
                 )}
               </div>
             </div>
@@ -4706,13 +5000,19 @@ export function AdminDashboard({
                       className="adm-input-sm"
                       placeholder="Filter SKU, product, colour…"
                       value={inventorySearch}
-                      onChange={(e) => setInventorySearch(e.target.value)}
+                      onChange={(e) => {
+                        setInventorySearch(e.target.value);
+                        setInventoryPage(1);
+                      }}
                     />
                     <div className="adm-seg-group">
                       <button
                         type="button"
                         className={`adm-seg-btn ${inventoryFilter === "all" ? "is-active" : ""}`}
-                        onClick={() => setInventoryFilter("all")}
+                        onClick={() => {
+                          setInventoryFilter("all");
+                          setInventoryPage(1);
+                        }}
                       >
                         All ({analytics.tables.variantInventory.length})
                       </button>
@@ -4721,7 +5021,10 @@ export function AdminDashboard({
                         className={`adm-seg-btn ${
                           inventoryFilter === "low_stock" ? "is-active" : ""
                         }`}
-                        onClick={() => setInventoryFilter("low_stock")}
+                        onClick={() => {
+                          setInventoryFilter("low_stock");
+                          setInventoryPage(1);
+                        }}
                       >
                         Low Stock ({analytics.tables.lowStockAlerts.length})
                       </button>
@@ -4730,7 +5033,10 @@ export function AdminDashboard({
                         className={`adm-seg-btn ${
                           inventoryFilter === "out_of_stock" ? "is-active" : ""
                         }`}
-                        onClick={() => setInventoryFilter("out_of_stock")}
+                        onClick={() => {
+                          setInventoryFilter("out_of_stock");
+                          setInventoryPage(1);
+                        }}
                       >
                         Out of Stock ({analytics.tables.outOfStockAlerts.length})
                       </button>
@@ -4754,7 +5060,7 @@ export function AdminDashboard({
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredVariants.map((row) => {
+                      {paginatedVariants.map((row) => {
                         const draft = variantDrafts[row.variantKey];
                         const stockVal =
                           draft?.stock !== undefined ? draft.stock : String(row.stock);
@@ -4854,6 +5160,15 @@ export function AdminDashboard({
                     </tbody>
                   </table>
                 </div>
+
+                <AdminPagination
+                  page={safeInventoryPage}
+                  pageSize={inventoryPageSize}
+                  totalItems={filteredVariants.length}
+                  itemLabel="variants"
+                  onPageChange={setInventoryPage}
+                  onPageSizeChange={setInventoryPageSize}
+                />
               </div>
             </div>
           )}
@@ -5042,7 +5357,10 @@ export function AdminDashboard({
                       type="text"
                       placeholder="Search customer, product, comment..."
                       value={reviewSearch}
-                      onChange={(e) => setReviewSearch(e.target.value)}
+                      onChange={(e) => {
+                        setReviewSearch(e.target.value);
+                        setReviewPage(1);
+                      }}
                     />
                   </div>
                 </div>
@@ -5083,28 +5401,40 @@ export function AdminDashboard({
                 <button
                   type="button"
                   className={`adm-btn adm-btn-sm ${reviewFilter === "all" ? "adm-btn-primary" : "adm-btn-secondary"}`}
-                  onClick={() => setReviewFilter("all")}
+                  onClick={() => {
+                    setReviewFilter("all");
+                    setReviewPage(1);
+                  }}
                 >
                   All ({reviews.length})
                 </button>
                 <button
                   type="button"
                   className={`adm-btn adm-btn-sm ${reviewFilter === "pending" ? "adm-btn-primary" : "adm-btn-secondary"}`}
-                  onClick={() => setReviewFilter("pending")}
+                  onClick={() => {
+                    setReviewFilter("pending");
+                    setReviewPage(1);
+                  }}
                 >
                   Pending ({pendingReviewsCount})
                 </button>
                 <button
                   type="button"
                   className={`adm-btn adm-btn-sm ${reviewFilter === "approved" ? "adm-btn-primary" : "adm-btn-secondary"}`}
-                  onClick={() => setReviewFilter("approved")}
+                  onClick={() => {
+                    setReviewFilter("approved");
+                    setReviewPage(1);
+                  }}
                 >
                   Approved ({approvedReviewsCount})
                 </button>
                 <button
                   type="button"
                   className={`adm-btn adm-btn-sm ${reviewFilter === "rejected" ? "adm-btn-primary" : "adm-btn-secondary"}`}
-                  onClick={() => setReviewFilter("rejected")}
+                  onClick={() => {
+                    setReviewFilter("rejected");
+                    setReviewPage(1);
+                  }}
                 >
                   Rejected ({rejectedReviewsCount})
                 </button>
@@ -5134,7 +5464,7 @@ export function AdminDashboard({
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredReviews.map((rev) => (
+                      {paginatedReviews.map((rev) => (
                         <tr key={rev.id}>
                           <td>
                             <div className="adm-cell-stack">
@@ -5280,6 +5610,17 @@ export function AdminDashboard({
                     </tbody>
                   </table>
                 </div>
+              )}
+
+              {filteredReviews.length > 0 && (
+                <AdminPagination
+                  page={safeReviewPage}
+                  pageSize={reviewPageSize}
+                  totalItems={filteredReviews.length}
+                  itemLabel="reviews"
+                  onPageChange={setReviewPage}
+                  onPageSizeChange={setReviewPageSize}
+                />
               )}
             </div>
           )}
