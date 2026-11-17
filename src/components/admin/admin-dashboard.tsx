@@ -370,6 +370,11 @@ export function AdminDashboard({
   const [contactMessages, setContactMessages] = useState<ContactMessageRecord[]>(
     initialContactMessages,
   );
+  const [selectedContactMessageId, setSelectedContactMessageId] = useState<string | null>(null);
+  const selectedContactMessage = useMemo(
+    () => contactMessages.find((m) => m.id === selectedContactMessageId) ?? null,
+    [contactMessages, selectedContactMessageId],
+  );
   const [resettingCustomerId, setResettingCustomerId] = useState<string | null>(null);
   const [resetPasswordInput, setResetPasswordInput] = useState("");
   const [savingCustomerReset, setSavingCustomerReset] = useState(false);
@@ -4571,12 +4576,30 @@ export function AdminDashboard({
                             <td>
                               <strong>{msg.topic}</strong>
                             </td>
-                            <td style={{ maxWidth: 340, whiteSpace: "pre-wrap", fontSize: 13 }}>
-                              {msg.message}
+                            <td style={{ maxWidth: 280, fontSize: 13 }}>
+                              <div
+                                style={{
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  whiteSpace: "pre-wrap",
+                                }}
+                              >
+                                {msg.message}
+                              </div>
                             </td>
                             <td>{formatOrderDate(msg.createdAt, true)}</td>
                             <td>
                               <div className="adm-row-btns">
+                                <button
+                                  type="button"
+                                  className="adm-btn adm-btn-sm adm-btn-primary"
+                                  onClick={() => setSelectedContactMessageId(msg.id)}
+                                >
+                                  <Eye size={13} /> View
+                                </button>
                                 <button
                                   type="button"
                                   className="adm-btn adm-btn-sm adm-btn-secondary"
@@ -8391,6 +8414,140 @@ export function AdminDashboard({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL 4: CUSTOMER CONTACT MESSAGE VIEWER ================= */}
+      {selectedContactMessage && (
+        <div
+          className="adm-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Customer contact message details"
+          onClick={() => setSelectedContactMessageId(null)}
+        >
+          <div className="adm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="adm-modal-head">
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <h3>Customer Inquiry</h3>
+                  <span
+                    className={`adm-status-pill ${
+                      selectedContactMessage.status === "resolved" ? "is-success" : "is-warning"
+                    }`}
+                  >
+                    {selectedContactMessage.status === "resolved" ? "Resolved" : "Unread"}
+                  </span>
+                </div>
+                <p className="adm-panel-sub">
+                  Received on {formatOrderDate(selectedContactMessage.createdAt, true)}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="adm-icon-btn"
+                onClick={() => setSelectedContactMessageId(null)}
+                aria-label="Close message details"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="adm-modal-body adm-form-stack">
+              <div className="adm-grid-2">
+                <div className="adm-info-block">
+                  <h4>Sender Details</h4>
+                  <p>
+                    <strong>{selectedContactMessage.name}</strong>
+                  </p>
+                  <p>
+                    Contact:{" "}
+                    {selectedContactMessage.contact.includes("@") ? (
+                      <a
+                        href={`mailto:${selectedContactMessage.contact}?subject=${encodeURIComponent(
+                          `Re: ${selectedContactMessage.topic}`,
+                        )}`}
+                        style={{ color: "var(--adm-accent)", textDecoration: "underline" }}
+                      >
+                        {selectedContactMessage.contact}
+                      </a>
+                    ) : (
+                      <a
+                        href={`tel:${selectedContactMessage.contact}`}
+                        style={{ color: "var(--adm-accent)", textDecoration: "underline" }}
+                      >
+                        {selectedContactMessage.contact}
+                      </a>
+                    )}
+                  </p>
+                </div>
+
+                <div className="adm-info-block">
+                  <h4>Topic &amp; Reference</h4>
+                  <p>
+                    <strong>{selectedContactMessage.topic}</strong>
+                  </p>
+                  <p style={{ fontSize: 12, opacity: 0.75 }}>ID: {selectedContactMessage.id}</p>
+                </div>
+              </div>
+
+              <div className="adm-info-block">
+                <h4>Full Message</h4>
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    background: "rgba(255, 255, 255, 0.03)",
+                    border: "1px solid var(--adm-border)",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    fontSize: 14,
+                    lineHeight: 1.65,
+                    maxHeight: 320,
+                    overflowY: "auto",
+                  }}
+                >
+                  {selectedContactMessage.message}
+                </div>
+              </div>
+
+              <div className="adm-modal-actions">
+                <button
+                  type="button"
+                  className="adm-btn adm-btn-primary"
+                  onClick={() => void handleToggleContactMessageStatus(selectedContactMessage)}
+                >
+                  <CheckCircle2 size={14} />{" "}
+                  {selectedContactMessage.status === "unread" ? "Mark Resolved" : "Mark Unread"}
+                </button>
+                {selectedContactMessage.contact.includes("@") && (
+                  <a
+                    href={`mailto:${selectedContactMessage.contact}?subject=${encodeURIComponent(
+                      `Re: ${selectedContactMessage.topic}`,
+                    )}`}
+                    className="adm-btn adm-btn-secondary"
+                  >
+                    <ExternalLink size={14} /> Reply via Email
+                  </a>
+                )}
+                <button
+                  type="button"
+                  className="adm-btn adm-btn-danger"
+                  onClick={() => void handleDeleteContactMessage(selectedContactMessage.id)}
+                >
+                  <Trash2 size={14} /> Delete
+                </button>
+                <button
+                  type="button"
+                  className="adm-btn adm-btn-secondary"
+                  onClick={() => setSelectedContactMessageId(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
