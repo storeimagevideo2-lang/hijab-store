@@ -2021,6 +2021,11 @@ export async function getPaginatedStoreOrders(options: {
   };
 }
 
+export async function getRecentStoreOrdersWindow(daysBack = 65): Promise<AdminOrderRecord[]> {
+  const sinceIso = new Date(Date.now() - daysBack * 86_400_000).toISOString();
+  return getStoreOrdersSince(sinceIso);
+}
+
 /**
  * High-scale analytics window loader:
  * Fetches ONLY orders created on or after `sinceIso` (using indexed `created_at >= sinceIso`

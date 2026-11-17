@@ -8,9 +8,9 @@ import {
   getPaginatedContactMessages,
   getPaginatedCustomerAccounts,
   getPaginatedStoreOrders,
+  getRecentStoreOrdersWindow,
   getStoreActivities,
   getStoreCoupons,
-  getStoreOrdersSince,
   getStoreSettings,
 } from "@/lib/server/store-repository";
 import "@/app/admin/admin.css";
@@ -48,8 +48,6 @@ export async function AdminPageView({
   // High-scale SSR: fetch only the 65-day analytics window (not 100,000+ lifetime orders)
   // and send only page 1 of orders, customers, and contact messages in the initial HTML payload
   // so the dashboard stays well under Vercel's 4.5 MB response limit at 10,000+ orders/month.
-  const sixtyFiveDaysAgoIso = new Date(Date.now() - 65 * 86_400_000).toISOString();
-
   const [
     products,
     analyticsOrders,
@@ -63,7 +61,7 @@ export async function AdminPageView({
   ] = session
     ? await Promise.all([
         getAllStoreProducts({ bypassCache: true, includeInactive: true }),
-        getStoreOrdersSince(sixtyFiveDaysAgoIso),
+        getRecentStoreOrdersWindow(65),
         getPaginatedStoreOrders({ page: 1, limit: 20 }),
         getStoreCoupons(),
         getStoreSettings(),
