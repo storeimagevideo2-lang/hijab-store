@@ -11,26 +11,33 @@ import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
 export async function GET() {
   const session = await getAdminSession();
+  if (!session) {
+    return NextResponse.json({
+      authenticated: false,
+      email: null,
+      status: null,
+    });
+  }
   const config = getBackendConfig();
   return NextResponse.json({
-    authenticated: Boolean(session),
-    email: session?.email ?? null,
+    authenticated: true,
+    email: session.email,
     status: {
       supabaseConfigured: config.supabaseConfigured,
       supabaseWriteConfigured: config.supabaseWriteConfigured,
       cloudinaryConfigured: config.cloudinaryConfigured,
-      defaultAdminEmail: session ? config.adminEmail : "admin@noor.com",
+      defaultAdminEmail: config.adminEmail,
     },
   });
 }
 
 export async function POST(request: Request) {
   const clientIp = getClientIp(request);
-  const rateLimit = checkRateLimit(`admin-login:${clientIp}`, 5, 60);
-  if (!rateLimit.success) {
+  const ipRateLimit = checkRateLimit(`admin-login:${clientIp}`, 5, 60);
+  if (!ipRateLimit.success) {
     return NextResponse.json(
-      { error: `Too many login attempts. Please wait ${rateLimit.retryAfterSeconds}s before retrying.` },
-      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+      { error: `Too many login attempts. Please wait ${ipRateLimit.retryAfterSeconds}s before retrying.` },
+      { status: 429, headers: { "Retry-After": String(ipRateLimit.retryAfterSeconds) } },
     );
   }
 
@@ -40,6 +47,21 @@ export async function POST(request: Request) {
 
     const email = (body.email ?? "").trim();
     const password = body.password ?? "";
+
+    if (!email) {
+      return NextResponse.json({ error: "Email is required." }, { status: 400 });
+    }
+
+    // Email-based lockout (prevents distributed IP brute force against admin accounts)
+    const emailLockout = checkRateLimit(`admin-lockout:${email.toLowerCase()}`, 5, 15 * 60);
+    if (!emailLockout.success) {
+      return NextResponse.json(
+        {
+          error: `This account is temporarily locked due to multiple failed login attempts. Please try again in ${Math.ceil(emailLockout.retryAfterSeconds / 60)} minute(s).`,
+        },
+        { status: 429, headers: { "Retry-After": String(emailLockout.retryAfterSeconds) } },
+      );
+    }
 
     if (!config.adminPassword) {
       return NextResponse.json(

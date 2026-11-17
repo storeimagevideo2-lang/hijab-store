@@ -49,6 +49,17 @@ export async function PUT() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Prevent accidental catalog/stock overwrite in production
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json(
+      {
+        error:
+          "Bulk seed/sync to Supabase is disabled in production to protect live inventory, sales, and pricing. Please edit individual products through the catalog manager.",
+      },
+      { status: 403 },
+    );
+  }
+
   try {
     const result = await seedSupabaseCatalog();
     return NextResponse.json(result);

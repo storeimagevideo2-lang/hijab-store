@@ -8,12 +8,60 @@ import {
   type AdminPaymentStatus,
 } from "@/lib/server/store-repository";
 
-export async function GET() {
+const VALID_ORDER_STATUSES: Set<AdminOrderStatus> = new Set([
+  "Pending",
+  "Confirmed",
+  "Processing",
+  "Shipped",
+  "Delivered",
+  "Cancelled",
+  "Returned",
+  "Refunded",
+]);
+
+const VALID_PAYMENT_STATUSES: Set<AdminPaymentStatus> = new Set([
+  "Pending",
+  "Paid",
+  "Failed",
+  "Refunded",
+  "Partially Refunded",
+]);
+
+const VALID_DELIVERY_STATUSES: Set<AdminDeliveryStatus> = new Set([
+  "Pending Dispatch",
+  "In Transit",
+  "Out for Delivery",
+  "Delivered",
+  "Returned",
+  "Cancelled",
+]);
+
+// Allowed state transitions: prevents invalid workflows like Delivered -> Pending or Refunded -> Delivered
+const ALLOWED_STATUS_TRANSITIONS: Record<AdminOrderStatus, AdminOrderStatus[]> = {
+  Pending: ["Confirmed", "Processing", "Cancelled"],
+  Confirmed: ["Processing", "Shipped", "Cancelled"],
+  Processing: ["Shipped", "Cancelled"],
+  Shipped: ["Delivered", "Returned", "Cancelled"],
+  Delivered: ["Returned", "Refunded"],
+  Returned: ["Refunded"],
+  Cancelled: [],
+  Refunded: [],
+};
+
+export async function GET(request: Request) {
   const session = await getAdminSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const orders = await getAllStoreOrders();
+
+  const { searchParams } = new URL(request.url);
+  const limitParam = searchParams.get("limit");
+  const offsetParam = searchParams.get("offset");
+
+  const limit = limitParam ? Math.max(1, Math.min(500, Number(limitParam))) : undefined;
+  const offset = offsetParam ? Math.max(0, Number(offsetParam)) : undefined;
+
+  const orders = await getAllStoreOrders({ limit, offset });
   return NextResponse.json({ orders });
 }
 
@@ -34,6 +82,50 @@ export async function PATCH(request: Request) {
     if (!body.id) {
       return NextResponse.json({ error: "Order ID is required." }, { status: 400 });
     }
+
+    if (body.status && !VALID_ORDER_STATUSES.has(body.status)) {
+      return NextResponse.json(
+        {
+          error: `Invalid status "${body.status}". Allowed values: ${Array.from(VALID_ORDER_STATUSES).join(", ")}.`,
+        },
+        { status: 400 },
+      );
+    }
+
+    if (body.status) {
+      const existingOrders = await getAllStoreOrders({ limit: 500 });
+      const currentOrder = existingOrders.find((o) => o.id === body.id);
+      if (currentOrder && currentOrder.status !== body.status) {
+        const allowedNext = ALLOWED_STATUS_TRANSITIONS[currentOrder.status] ?? [];
+        if (!allowedNext.includes(body.status)) {
+          return NextResponse.json(
+            {
+              error: `Invalid status transition from "${currentOrder.status}" to "${body.status}". Allowed transitions: ${allowedNext.join(", ") || "None (terminal status)"}.`,
+            },
+            { status: 400 },
+          );
+        }
+      }
+    }
+
+    if (body.paymentStatus && !VALID_PAYMENT_STATUSES.has(body.paymentStatus)) {
+      return NextResponse.json(
+        {
+          error: `Invalid payment status "${body.paymentStatus}". Allowed values: ${Array.from(VALID_PAYMENT_STATUSES).join(", ")}.`,
+        },
+        { status: 400 },
+      );
+    }
+
+    if (body.deliveryStatus && !VALID_DELIVERY_STATUSES.has(body.deliveryStatus)) {
+      return NextResponse.json(
+        {
+          error: `Invalid delivery status "${body.deliveryStatus}". Allowed values: ${Array.from(VALID_DELIVERY_STATUSES).join(", ")}.`,
+        },
+        { status: 400 },
+      );
+    }
+
     const result = await updateStoreOrder({
       id: body.id,
       status: body.status,
@@ -41,6 +133,11 @@ export async function PATCH(request: Request) {
       deliveryStatus: body.deliveryStatus,
       refundAmount: body.refundAmount,
     });
+
+    if (!result.order) {
+      return NextResponse.json({ error: "Order not found." }, { status: 404 });
+    }
+
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to update order.";

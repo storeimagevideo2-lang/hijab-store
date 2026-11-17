@@ -105,6 +105,7 @@ export type AdminOrderRecord = Omit<Order, "status"> & {
   couponCode?: string | null;
   taxAmount: number;
   refundAmount: number;
+  inventoryDeducted?: boolean;
   updatedAt?: string;
 };
 
@@ -611,12 +612,8 @@ export function derivePaymentStatus(
   if (status === "Refunded" || (refundAmount > 0 && refundAmount >= total)) return "Refunded";
   if (refundAmount > 0 && refundAmount < total) return "Partially Refunded";
   if (status === "Cancelled") return "Failed";
-  if (paymentMethod === "cod") {
-    if (status === "Delivered") return "Paid";
-    return "Pending";
-  }
-  if (paymentMethod === "bkash" || paymentMethod === "nagad") return "Paid";
   if (status === "Delivered") return "Paid";
+  // For COD, bKash, and Nagad: status starts as Pending until confirmed/verified by admin
   return "Pending";
 }
 
@@ -648,7 +645,7 @@ function normalizeOrderRecord(
   raw: Omit<Order, "status"> & Partial<AdminOrderRecord> & { status?: AdminOrderStatus },
 ): AdminOrderRecord {
   const status: AdminOrderStatus =
-    raw.status ?? (raw.paymentMethod === "cod" ? "Pending" : "Confirmed");
+    raw.status ?? "Pending";
   const subtotal = Number(raw.subtotal ?? 0);
   const shippingFee = Number(raw.shippingFee ?? 0);
   const discountAmount = Math.max(0, Number(raw.discountAmount ?? 0));
@@ -671,6 +668,7 @@ function normalizeOrderRecord(
     total,
     paymentStatus: derivePaymentStatus(status, raw.paymentMethod, raw.paymentStatus, refundAmount, total),
     deliveryStatus: deriveDeliveryStatus(status, raw.deliveryStatus),
+    inventoryDeducted: raw.inventoryDeducted ?? true,
     updatedAt: raw.updatedAt ?? raw.createdAt,
   };
 }
@@ -1454,13 +1452,18 @@ export async function upsertStoreProduct(input: AdminProductInput): Promise<{
           gallery: primaryGallery,
         };
       }
+      if (!existing) {
+        // For new products, any extra unconfigured variant gets 0 stock (prevents phantom stock)
+        return {
+          ...v,
+          stock: 0,
+        };
+      }
       return v;
     }) as [ProductVariant, ...ProductVariant[]];
   })();
 
-  const totalStock = input.variantStocks
-    ? sumVariantStocks(updatedVariants)
-    : updatedVariants.reduce((sum, v) => sum + v.stock, 0);
+  const totalStock = updatedVariants.reduce((sum, v) => sum + Math.max(0, Number(v.stock || 0)), 0);
 
   const wasRestocked = existing ? totalStock > existing.stock : false;
 
@@ -1793,47 +1796,58 @@ export async function seedSupabaseCatalog(): Promise<{ count: number }> {
   return { count: rows.length };
 }
 
-export async function getAllStoreOrders(): Promise<AdminOrderRecord[]> {
+function parseSupabaseOrderRow(row: SupabaseOrderRow): AdminOrderRecord {
+  return normalizeOrderRecord({
+    id: row.id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
+    customer: {
+      name: row.customer_name,
+      phone: row.customer_phone,
+      ...(row.customer_email ? { email: row.customer_email } : {}),
+      address: row.customer_address,
+      city: row.customer_city,
+      ...(row.customer_notes ? { notes: row.customer_notes } : {}),
+    },
+    deliveryZone: row.delivery_zone,
+    paymentMethod: row.payment_method,
+    ...(row.payment_phone ? { paymentPhone: row.payment_phone } : {}),
+    items: row.items,
+    subtotal: Number(row.subtotal),
+    discountAmount: Number(row.discount_amount ?? 0),
+    couponCode: row.coupon_code ?? null,
+    shippingFee: Number(row.shipping_fee),
+    taxAmount: Number(row.tax_amount ?? 0),
+    refundAmount: Number(row.refund_amount ?? 0),
+    total: Number(row.total),
+    status: row.status as Order["status"],
+    paymentStatus: row.payment_status ?? undefined,
+    deliveryStatus: row.delivery_status ?? undefined,
+  });
+}
+
+export async function getAllStoreOrders(options?: {
+  limit?: number;
+  offset?: number;
+}): Promise<AdminOrderRecord[]> {
   const config = getBackendConfig();
 
   if (config.supabaseWriteConfigured) {
     try {
-      const endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&order=created_at.desc`;
+      let endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&order=created_at.desc`;
+      if (options?.limit) {
+        endpoint += `&limit=${options.limit}`;
+      }
+      if (options?.offset) {
+        endpoint += `&offset=${options.offset}`;
+      }
       const response = await fetch(endpoint, {
         headers: supabaseHeaders(true),
         cache: "no-store",
       });
       if (response.ok) {
         const rows = (await response.json()) as SupabaseOrderRow[];
-        return rows.map((row) =>
-          normalizeOrderRecord({
-            id: row.id,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at ?? row.created_at,
-            customer: {
-              name: row.customer_name,
-              phone: row.customer_phone,
-              ...(row.customer_email ? { email: row.customer_email } : {}),
-              address: row.customer_address,
-              city: row.customer_city,
-              ...(row.customer_notes ? { notes: row.customer_notes } : {}),
-            },
-            deliveryZone: row.delivery_zone,
-            paymentMethod: row.payment_method,
-            ...(row.payment_phone ? { paymentPhone: row.payment_phone } : {}),
-            items: row.items,
-            subtotal: Number(row.subtotal),
-            discountAmount: Number(row.discount_amount ?? 0),
-            couponCode: row.coupon_code ?? null,
-            shippingFee: Number(row.shipping_fee),
-            taxAmount: Number(row.tax_amount ?? 0),
-            refundAmount: Number(row.refund_amount ?? 0),
-            total: Number(row.total),
-            status: row.status as Order["status"],
-            paymentStatus: row.payment_status ?? undefined,
-            deliveryStatus: row.delivery_status ?? undefined,
-          }),
-        );
+        return rows.map(parseSupabaseOrderRow);
       }
     } catch {
       // Fallback to local store
@@ -1841,7 +1855,14 @@ export async function getAllStoreOrders(): Promise<AdminOrderRecord[]> {
   }
 
   const local = await readLocalStore();
-  return local.orders;
+  let orders = local.orders;
+  if (options?.offset) {
+    orders = orders.slice(options.offset);
+  }
+  if (options?.limit) {
+    orders = orders.slice(0, options.limit);
+  }
+  return orders;
 }
 
 function normalizePhoneForMatch(phone?: string | null): string {
@@ -1853,8 +1874,29 @@ function normalizePhoneForMatch(phone?: string | null): string {
 
 export async function getStoreOrdersByIds(ids: string[]): Promise<AdminOrderRecord[]> {
   if (!ids || ids.length === 0) return [];
+  const cleanIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  if (cleanIds.length === 0) return [];
+
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const inClause = cleanIds.map(encodeURIComponent).join(",");
+      const endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&id=in.(${inClause})&order=created_at.desc`;
+      const response = await fetch(endpoint, {
+        headers: supabaseHeaders(true),
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const rows = (await response.json()) as SupabaseOrderRow[];
+        return rows.map(parseSupabaseOrderRow);
+      }
+    } catch {
+      // Fallback to local store
+    }
+  }
+
   const allOrders = await getAllStoreOrders();
-  const idSet = new Set(ids);
+  const idSet = new Set(cleanIds);
   return allOrders.filter((order) => idSet.has(order.id));
 }
 
@@ -1869,6 +1911,34 @@ export async function getStoreOrdersByCustomer(query: {
 
   if (idSet.size === 0 && !cleanPhone && !cleanEmail) {
     return [];
+  }
+
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const orClauses: string[] = [];
+      if (idSet.size > 0) {
+        orClauses.push(`id=in.(${Array.from(idSet).map(encodeURIComponent).join(",")})`);
+      }
+      if (cleanPhone) {
+        orClauses.push(`customer_phone=eq.${encodeURIComponent(cleanPhone)}`);
+      }
+      if (cleanEmail) {
+        orClauses.push(`customer_email=eq.${encodeURIComponent(cleanEmail)}`);
+      }
+
+      const endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&or=(${orClauses.join(",")})&order=created_at.desc&limit=200`;
+      const response = await fetch(endpoint, {
+        headers: supabaseHeaders(true),
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const rows = (await response.json()) as SupabaseOrderRow[];
+        return rows.map(parseSupabaseOrderRow);
+      }
+    } catch {
+      // Fallback
+    }
   }
 
   const allOrders = await getAllStoreOrders();
@@ -1904,10 +1974,6 @@ function isSystemCouponRow(row: { id: string; code: string }): boolean {
   );
 }
 
-function isActiveOrderInventoryState(status: string): boolean {
-  return status !== "Cancelled" && status !== "Returned";
-}
-
 async function validateOrderStock(items: Order["items"]): Promise<void> {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error("Your order must contain at least one item.");
@@ -1934,25 +2000,41 @@ async function validateOrderStock(items: Order["items"]): Promise<void> {
   }
 }
 
-async function adjustCatalogStockForOrderItems(
+async function reserveCatalogStockForOrder(
   local: LocalRuntimeStore,
   items: Order["items"],
-  direction: -1 | 1,
 ): Promise<void> {
   if (!Array.isArray(items) || items.length === 0) return;
   const config = getBackendConfig();
 
+  // 1. Try atomic PostgreSQL RPC in Supabase (with SELECT ... FOR UPDATE row locks)
+  if (config.supabaseWriteConfigured) {
+    try {
+      const rpcEndpoint = `${config.supabaseUrl}/rest/v1/rpc/reserve_order_stock`;
+      const res = await fetch(rpcEndpoint, {
+        method: "POST",
+        headers: supabaseHeaders(true),
+        body: JSON.stringify({ p_items: items }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { success: boolean; error?: string };
+        if (data && data.success === false) {
+          throw new Error(data.error || "Sorry, one or more items in your cart just went out of stock.");
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("stock")) {
+        throw err;
+      }
+    }
+  }
+
+  // 2. Decrement stock in local runtime store and sync variants
   for (const item of items) {
-    const qty = Math.max(0, Math.round(Number(item.quantity ?? 1)));
-    if (qty <= 0) continue;
-
-    // 1. Update local store product stock
+    const qty = Math.max(1, Math.round(Number(item.quantity ?? 1)));
     const localProd = local.products.find((p) => p.id === item.id || p.slug === item.slug);
-    let nextStock: number | undefined;
-    let nextVariants: ProductVariant[] | undefined;
-
     if (localProd) {
-      localProd.stock = Math.max(0, localProd.stock + direction * qty);
+      localProd.stock = Math.max(0, localProd.stock - qty);
       if (localProd.details.variants.length > 0) {
         const targetIdx = item.colour
           ? localProd.details.variants.findIndex((v) => v.colour === item.colour)
@@ -1960,62 +2042,49 @@ async function adjustCatalogStockForOrderItems(
         const resolvedIdx = targetIdx >= 0 ? targetIdx : 0;
         localProd.details.variants[resolvedIdx].stock = Math.max(
           0,
-          localProd.details.variants[resolvedIdx].stock + direction * qty,
+          localProd.details.variants[resolvedIdx].stock - qty,
         );
       }
-      nextStock = localProd.stock;
-      nextVariants = localProd.details.variants;
     }
+  }
+}
 
-    // 2. Sync stock adjustment to Supabase products table
-    if (config.supabaseWriteConfigured) {
-      try {
-        if (nextStock === undefined) {
-          const checkRes = await fetch(
-            `${config.supabaseUrl}/rest/v1/products?select=id,stock,variants&id=eq.${encodeURIComponent(item.id)}&limit=1`,
-            {
-              headers: supabaseHeaders(true),
-              cache: "no-store",
-            },
-          );
-          if (checkRes.ok) {
-            const rows = (await checkRes.json()) as Array<{
-              id: string;
-              stock: number;
-              variants?: ProductVariant[];
-            }>;
-            if (rows[0]) {
-              nextStock = Math.max(0, Number(rows[0].stock ?? 0) + direction * qty);
-              if (Array.isArray(rows[0].variants) && rows[0].variants.length > 0) {
-                const targetIdx = item.colour
-                  ? rows[0].variants.findIndex((v) => v.colour === item.colour)
-                  : 0;
-                const resolvedIdx = targetIdx >= 0 ? targetIdx : 0;
-                nextVariants = rows[0].variants.map((v, idx) =>
-                  idx === resolvedIdx
-                    ? { ...v, stock: Math.max(0, Number(v.stock ?? 0) + direction * qty) }
-                    : v,
-                );
-              }
-            }
-          }
-        }
+async function restoreCatalogStockForOrder(
+  local: LocalRuntimeStore,
+  items: Order["items"],
+): Promise<void> {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const config = getBackendConfig();
 
-        if (nextStock !== undefined) {
-          await fetch(
-            `${config.supabaseUrl}/rest/v1/products?id=eq.${encodeURIComponent(item.id)}`,
-            {
-              method: "PATCH",
-              headers: supabaseHeaders(true),
-              body: JSON.stringify({
-                stock: nextStock,
-                ...(nextVariants ? { variants: nextVariants } : {}),
-              }),
-            },
-          );
-        }
-      } catch {
-        // Keep local stock update
+  // 1. Try atomic PostgreSQL RPC in Supabase
+  if (config.supabaseWriteConfigured) {
+    try {
+      const rpcEndpoint = `${config.supabaseUrl}/rest/v1/rpc/restore_order_stock`;
+      await fetch(rpcEndpoint, {
+        method: "POST",
+        headers: supabaseHeaders(true),
+        body: JSON.stringify({ p_items: items }),
+      });
+    } catch {
+      // Fallback
+    }
+  }
+
+  // 2. Increment stock in local store
+  for (const item of items) {
+    const qty = Math.max(1, Math.round(Number(item.quantity ?? 1)));
+    const localProd = local.products.find((p) => p.id === item.id || p.slug === item.slug);
+    if (localProd) {
+      localProd.stock = Math.max(0, localProd.stock + qty);
+      if (localProd.details.variants.length > 0) {
+        const targetIdx = item.colour
+          ? localProd.details.variants.findIndex((v) => v.colour === item.colour)
+          : 0;
+        const resolvedIdx = targetIdx >= 0 ? targetIdx : 0;
+        localProd.details.variants[resolvedIdx].stock = Math.max(
+          0,
+          localProd.details.variants[resolvedIdx].stock + qty,
+        );
       }
     }
   }
@@ -2126,6 +2195,11 @@ export async function recordCustomerOrder(
   normalized.shippingFee = authoritativeShipping;
   normalized.total = Math.max(0, recalculatedSubtotal - verifiedDiscount + authoritativeShipping);
 
+  const local = await readLocalStore();
+
+  // Atomic stock reservation: reserve inventory before recording order
+  await reserveCatalogStockForOrder(local, normalized.items);
+
   const config = getBackendConfig();
   let storage: "supabase" | "local" = "local";
 
@@ -2163,18 +2237,26 @@ export async function recordCustomerOrder(
       });
       if (response.ok) {
         storage = "supabase";
+      } else {
+        const errText = await response.text().catch(() => "");
+        if (process.env.NODE_ENV === "production") {
+          await restoreCatalogStockForOrder(local, normalized.items);
+          throw new Error(
+            `Unable to save order to database (${response.status}: ${errText}). Please try again in a few moments or contact support.`,
+          );
+        }
       }
-    } catch {
-      // Fallback to local runtime store
+    } catch (err) {
+      if (process.env.NODE_ENV === "production") {
+        await restoreCatalogStockForOrder(local, normalized.items);
+        throw err instanceof Error ? err : new Error("Failed to record order in database. Please try again.");
+      }
+      // In development only, allow local runtime store fallback
     }
   }
 
-  const local = await readLocalStore();
   if (!local.orders.some((existing) => existing.id === normalized.id)) {
     local.orders.unshift(normalized);
-
-    // Deduct stock in both local store and Supabase products table
-    await adjustCatalogStockForOrderItems(local, normalized.items, -1);
 
     // Increment coupon usage count if a coupon was applied
     if (normalized.couponCode) {
@@ -2208,8 +2290,19 @@ export async function updateStoreOrder(input: {
   courierConsignmentId?: string;
 }): Promise<{ storage: "supabase" | "local"; order: AdminOrderRecord | null }> {
   const local = await readLocalStore();
-  const target = local.orders.find((order) => order.id === input.id);
-  const previousStatus = target?.status ?? "Pending";
+  const config = getBackendConfig();
+  let target = local.orders.find((order) => order.id === input.id);
+
+  if (!target && config.supabaseWriteConfigured) {
+    const fromDb = await getStoreOrdersByIds([input.id]);
+    if (fromDb[0]) target = fromDb[0];
+  }
+
+  if (!target) {
+    return { storage: "local", order: null };
+  }
+
+  const previousStatus = target.status;
 
   let derivedStatusFromDelivery: AdminOrderStatus | undefined;
   if (!input.status && input.deliveryStatus) {
@@ -2222,7 +2315,7 @@ export async function updateStoreOrder(input: {
     } else if (input.deliveryStatus === "Cancelled") {
       derivedStatusFromDelivery = "Cancelled";
     } else if (input.deliveryStatus === "Pending Dispatch") {
-      const currentSt = target?.status;
+      const currentSt = target.status;
       derivedStatusFromDelivery =
         currentSt === "Pending" || currentSt === "Confirmed" || currentSt === "Processing"
           ? currentSt
@@ -2230,26 +2323,24 @@ export async function updateStoreOrder(input: {
     }
   }
 
-  const nextStatus = input.status ?? derivedStatusFromDelivery ?? target?.status ?? "Pending";
-  const nextRefund =
+  const nextStatus = input.status ?? derivedStatusFromDelivery ?? target.status;
+  const targetTotal = target.total;
+  const rawRefund =
     input.refundAmount !== undefined
-      ? Math.max(0, Number(input.refundAmount))
-      : nextStatus === "Refunded" && target
-        ? target.total
-        : target?.refundAmount ?? 0;
+      ? Number(input.refundAmount)
+      : nextStatus === "Refunded"
+        ? targetTotal
+        : target.refundAmount ?? 0;
+  // Clamp refund amount between 0 and total (prevents excessive refund values)
+  const nextRefund = Math.min(targetTotal, Math.max(0, rawRefund));
 
   const nextPaymentStatus =
     input.paymentStatus ??
-    (target
-      ? derivePaymentStatus(nextStatus, target.paymentMethod, undefined, nextRefund, target.total)
-      : nextStatus === "Delivered"
-        ? "Paid"
-        : "Pending");
+    derivePaymentStatus(nextStatus, target.paymentMethod, undefined, nextRefund, target.total);
 
   const nextDeliveryStatus =
     input.deliveryStatus ?? deriveDeliveryStatus(nextStatus, undefined);
 
-  const config = getBackendConfig();
   let storage: "supabase" | "local" = "local";
 
   if (config.supabaseWriteConfigured) {
@@ -2273,38 +2364,43 @@ export async function updateStoreOrder(input: {
     }
   }
 
-  // Restore stock if order transitions from active -> Cancelled/Returned, or re-deduct if re-activated
-  if (target && previousStatus !== nextStatus) {
-    const wasActive = isActiveOrderInventoryState(previousStatus);
-    const isNowActive = isActiveOrderInventoryState(nextStatus);
-    if (wasActive && !isNowActive) {
-      await adjustCatalogStockForOrderItems(local, target.items, 1);
-    } else if (!wasActive && isNowActive) {
-      await adjustCatalogStockForOrderItems(local, target.items, -1);
+  // Inventory status transitions using explicit inventoryDeducted flag
+  if (previousStatus !== nextStatus) {
+    const isNowCancelledOrReturned = nextStatus === "Cancelled" || nextStatus === "Returned";
+    const wasDeducted = target.inventoryDeducted !== false;
+
+    if (isNowCancelledOrReturned && wasDeducted) {
+      await restoreCatalogStockForOrder(local, target.items);
+      target.inventoryDeducted = false;
+    } else if (!isNowCancelledOrReturned && !wasDeducted && nextStatus !== "Refunded") {
+      await reserveCatalogStockForOrder(local, target.items);
+      target.inventoryDeducted = true;
     }
+    // Note: Returned -> Refunded does NOT re-deduct inventory!
   }
 
-  if (target) {
-    target.status = nextStatus;
-    target.paymentStatus = nextPaymentStatus;
-    target.deliveryStatus = nextDeliveryStatus;
-    target.refundAmount = nextRefund;
-    if (input.courierProvider) target.courierProvider = input.courierProvider;
-    if (input.courierTrackingCode) target.courierTrackingCode = input.courierTrackingCode;
-    if (input.courierConsignmentId) target.courierConsignmentId = input.courierConsignmentId;
-    target.updatedAt = new Date().toISOString();
-    appendActivity(local, {
-      type: "order",
-      title: `Order ${target.id} updated`,
-      detail: `Order: ${nextStatus} · Payment: ${nextPaymentStatus} · Delivery: ${nextDeliveryStatus}`,
-    });
-    await writeLocalStore(local);
-  }
+  target.status = nextStatus;
+  target.paymentStatus = nextPaymentStatus;
+  target.deliveryStatus = nextDeliveryStatus;
+  target.refundAmount = nextRefund;
+  if (input.courierProvider) target.courierProvider = input.courierProvider;
+  if (input.courierTrackingCode) target.courierTrackingCode = input.courierTrackingCode;
+  if (input.courierConsignmentId) target.courierConsignmentId = input.courierConsignmentId;
+  target.updatedAt = new Date().toISOString();
+
+  appendActivity(local, {
+    type: "order",
+    title: `Order ${target.id} updated`,
+    detail: `Order: ${nextStatus} · Payment: ${nextPaymentStatus} · Delivery: ${nextDeliveryStatus}`,
+  });
+  await writeLocalStore(local);
 
   revalidatePath("/");
   revalidatePath("/shop");
+  revalidatePath("/cart");
+  revalidatePath("/checkout");
 
-  return { storage, order: target ?? null };
+  return { storage, order: target };
 }
 
 export async function updateStoreOrderStatus(
@@ -3189,6 +3285,20 @@ export async function createCustomerReview(input: {
   const products = await getAllStoreProducts({ includeInactive: true });
   const prod = products.find((p) => p.id === input.productId);
 
+  // Authenticate verified purchase: order must exist and must contain this product
+  let isVerifiedPurchase = false;
+  if (normalizedOrderId) {
+    const matchedOrders = await getStoreOrdersByIds([normalizedOrderId]);
+    const matchedOrder = matchedOrders[0];
+    if (
+      matchedOrder &&
+      Array.isArray(matchedOrder.items) &&
+      matchedOrder.items.some((item) => item.id === input.productId || item.slug === prod?.slug)
+    ) {
+      isVerifiedPurchase = true;
+    }
+  }
+
   const record: AdminReviewRecord = {
     id,
     productId: input.productId,
@@ -3200,7 +3310,7 @@ export async function createCustomerReview(input: {
     title: input.title?.trim() || "",
     comment: input.comment.trim(),
     status: input.status ?? "pending",
-    verifiedPurchase: Boolean(normalizedOrderId),
+    verifiedPurchase: isVerifiedPurchase,
     createdAt: new Date().toISOString(),
   };
 

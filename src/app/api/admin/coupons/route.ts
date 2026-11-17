@@ -32,13 +32,33 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Coupon code is required." }, { status: 400 });
     }
 
+    const discountType = body.discountType === "fixed" ? "fixed" : "percentage";
+    const discountVal = Number(body.discountValue ?? 10);
+    const minOrderAmt = Math.max(0, Number(body.minOrderAmount ?? 0));
+
+    if (discountType === "percentage") {
+      if (Number.isNaN(discountVal) || discountVal < 1 || discountVal > 100) {
+        return NextResponse.json(
+          { error: "Percentage discount must be between 1% and 100%." },
+          { status: 400 },
+        );
+      }
+    } else {
+      if (Number.isNaN(discountVal) || discountVal <= 0) {
+        return NextResponse.json(
+          { error: "Fixed discount amount must be greater than ৳0." },
+          { status: 400 },
+        );
+      }
+    }
+
     const coupon = await upsertStoreCoupon({
       id: body.id,
-      code: body.code,
+      code: body.code.trim().toUpperCase(),
       description: body.description,
-      discountType: body.discountType === "fixed" ? "fixed" : "percentage",
-      discountValue: Number(body.discountValue ?? 10),
-      minOrderAmount: Number(body.minOrderAmount ?? 0),
+      discountType,
+      discountValue: discountVal,
+      minOrderAmount: minOrderAmt,
       active: body.active ?? true,
     });
 

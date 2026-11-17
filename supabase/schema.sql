@@ -162,3 +162,82 @@ create policy "Public can view approved reviews"
 -- All reviews must go through the Next.js server-side endpoint (/api/reviews)
 -- which enforces verified purchase checks and moderation status using the service_role key.
 drop policy if exists "Anyone can submit reviews" on public.reviews;
+
+-- 6. Atomic High-Concurrency Stock Reservation & Restoration
+-- Prevents overselling when multiple shoppers purchase the last stock at the exact same millisecond.
+-- Uses row-level locks (SELECT ... FOR UPDATE) to ensure strictly atomic transactions.
+create or replace function public.reserve_order_stock(p_items jsonb)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  item jsonb;
+  prod_id text;
+  req_qty int;
+  avail_stock int;
+  prod_name text;
+begin
+  -- Phase 1: Lock candidate product rows and verify adequate inventory for all order items
+  for item in select * from jsonb_array_elements(p_items)
+  loop
+    prod_id := item->>'id';
+    req_qty := greatest(1, (item->>'quantity')::int);
+
+    select stock, name into avail_stock, prod_name
+    from public.products
+    where id = prod_id
+    for update;
+
+    if not found then
+      return jsonb_build_object('success', false, 'error', 'Product ' || prod_id || ' was not found in the catalog.');
+    end if;
+
+    if avail_stock < req_qty then
+      return jsonb_build_object(
+        'success', false,
+        'error', 'Sorry, "' || prod_name || '" just ran out of stock (only ' || avail_stock || ' available).'
+      );
+    end if;
+  end loop;
+
+  -- Phase 2: Decrement inventory atomically across all items
+  for item in select * from jsonb_array_elements(p_items)
+  loop
+    prod_id := item->>'id';
+    req_qty := greatest(1, (item->>'quantity')::int);
+
+    update public.products
+    set stock = stock - req_qty,
+        updated_at = now()
+    where id = prod_id;
+  end loop;
+
+  return jsonb_build_object('success', true);
+end;
+$$;
+
+create or replace function public.restore_order_stock(p_items jsonb)
+returns jsonb
+language plpgsql
+security definer
+as $$
+declare
+  item jsonb;
+  prod_id text;
+  req_qty int;
+begin
+  for item in select * from jsonb_array_elements(p_items)
+  loop
+    prod_id := item->>'id';
+    req_qty := greatest(1, (item->>'quantity')::int);
+
+    update public.products
+    set stock = stock + req_qty,
+        updated_at = now()
+    where id = prod_id;
+  end loop;
+
+  return jsonb_build_object('success', true);
+end;
+$$;

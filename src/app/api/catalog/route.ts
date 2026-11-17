@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const [products, settings] = await Promise.all([
-      getAllStoreProducts({ bypassCache: true }),
+      getAllStoreProducts(),
       getStoreSettings(),
     ]);
 
@@ -18,17 +18,24 @@ export async function GET() {
       return publicData;
     });
 
-    return NextResponse.json({
-      ok: true,
-      products: sanitizedProducts,
-      taxonomy: settings.taxonomy,
-      contact: {
-        email: settings.contactEmail,
-        phone: settings.contactPhone,
-        location: settings.contactLocation,
+    return NextResponse.json(
+      {
+        ok: true,
+        products: sanitizedProducts,
+        taxonomy: settings.taxonomy,
+        contact: {
+          email: settings.contactEmail,
+          phone: settings.contactPhone,
+          location: settings.contactLocation,
+        },
+        socialLinks: settings.socialLinks,
       },
-      socialLinks: settings.socialLinks,
-    });
+      {
+        headers: {
+          "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+        },
+      },
+    );
   } catch {
     return NextResponse.json(
       { ok: false, error: "Failed to load catalog" },

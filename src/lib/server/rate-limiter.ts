@@ -45,9 +45,33 @@ export function checkRateLimit(
 }
 
 export function getClientIp(request: Request): string {
+  // 1. Vercel Edge proxy header (cannot be spoofed by client)
+  const vercelIp = request.headers.get("x-vercel-forwarded-for");
+  if (vercelIp) {
+    return vercelIp.split(",")[0].trim();
+  }
+
+  // 2. Cloudflare connecting IP (cannot be spoofed if behind Cloudflare)
+  const cfIp = request.headers.get("cf-connecting-ip");
+  if (cfIp) {
+    return cfIp.trim();
+  }
+
+  // 3. Reverse proxy real IP header
+  const realIp = request.headers.get("x-real-ip");
+  if (realIp) {
+    return realIp.trim();
+  }
+
+  // 4. Standard X-Forwarded-For fallback:
+  // When behind trusted proxies, the rightmost IP is appended by the nearest trusted edge/load balancer
   const forwarded = request.headers.get("x-forwarded-for");
   if (forwarded) {
-    return forwarded.split(",")[0].trim();
+    const parts = forwarded.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      return parts[parts.length - 1];
+    }
   }
-  return request.headers.get("x-real-ip") || "127.0.0.1";
+
+  return "127.0.0.1";
 }
