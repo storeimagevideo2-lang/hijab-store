@@ -49,6 +49,13 @@ export function getBackendConfig() {
     isRealValue(cloudinaryApiKey) &&
     isRealValue(cloudinaryApiSecret);
 
+  const rawAdminPath =
+    process.env.ADMIN_CUSTOM_PATH?.trim() ||
+    process.env.ADMIN_PATH?.trim() ||
+    "/mehanoor-control-dash";
+  const cleanAdminSlug = rawAdminPath.replace(/^\/+|\/+$/g, "");
+  const adminPath = cleanAdminSlug ? `/${cleanAdminSlug}` : "/mehanoor-control-dash";
+
   return {
     supabaseUrl: supabaseUrl || "",
     supabaseAnonKey: supabaseAnonKey || "",
@@ -62,5 +69,6 @@ export function getBackendConfig() {
     adminEmail,
     adminPassword,
     adminSecret,
+    adminPath,
   };
 }

@@ -10,6 +10,28 @@ const nextConfig: NextConfig = {
     ],
   },
   devIndicators: false,
+  async rewrites() {
+    const rawCustom = (
+      process.env.ADMIN_CUSTOM_PATH ||
+      process.env.ADMIN_PATH ||
+      ""
+    )
+      .trim()
+      .replace(/^\/+|\/+$/g, "");
+    if (
+      rawCustom &&
+      rawCustom !== "mehanoor-control-dash" &&
+      rawCustom !== "admin"
+    ) {
+      return [
+        {
+          source: `/${rawCustom}`,
+          destination: "/mehanoor-control-dash",
+        },
+      ];
+    }
+    return [];
+  },
   async headers() {
     return [
       {

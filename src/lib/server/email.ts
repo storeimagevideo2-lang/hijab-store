@@ -346,6 +346,8 @@ export async function sendAdminNewOrderNotification({
   adminEmail?: string;
 }): Promise<{ ok: boolean; devMode: boolean; message: string }> {
   const targetEmail = adminEmail?.trim() || process.env.ADMIN_EMAIL || "admin@noor.com";
+  const rawAdminPath = (process.env.ADMIN_CUSTOM_PATH || process.env.ADMIN_PATH || "/mehanoor-control-dash").trim();
+  const adminPath = "/" + rawAdminPath.replace(/^\/+|\/+$/g, "");
   const fromAddress =
     process.env.SMTP_FROM ||
     (process.env.RESEND_API_KEY ? "NOOR Orders <onboarding@resend.dev>" : '"NOOR Orders" <no-reply@noor.example>');
@@ -356,7 +358,7 @@ export async function sendAdminNewOrderNotification({
     <p><strong>Address:</strong> ${order.customer.address}, ${order.customer.city}</p>
     <p><strong>Total Amount:</strong> ৳${order.total} (${order.paymentMethod.toUpperCase()})</p>
     <p><strong>Items:</strong> ${order.items.map((i) => `${i.quantity}x ${i.name} (${i.colour})`).join(", ")}</p>
-    <p><a href="${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}/admin">Go to Admin Dashboard to view</a></p>
+    <p><a href="${process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000"}${adminPath}">Go to Admin Dashboard to view</a></p>
   `;
 
   // Resend or SMTP
