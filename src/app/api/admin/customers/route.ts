@@ -3,15 +3,30 @@ import { getAdminSession } from "@/lib/server/admin-auth";
 import {
   adminResetCustomerPassword,
   getCustomerAccountsPublic,
+  getPaginatedCustomerAccounts,
 } from "@/lib/server/store-repository";
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getAdminSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized admin session." }, { status: 401 });
   }
+  const { searchParams } = new URL(request.url);
+  const pageParam = searchParams.get("page");
+  const limitParam = searchParams.get("limit");
+  const search = searchParams.get("search") ?? undefined;
+
+  if (pageParam || limitParam || search) {
+    const result = await getPaginatedCustomerAccounts({
+      page: pageParam ? Number(pageParam) : 1,
+      limit: limitParam ? Number(limitParam) : 20,
+      search,
+    });
+    return NextResponse.json({ ok: true, ...result });
+  }
+
   const customers = await getCustomerAccountsPublic();
-  return NextResponse.json({ customers });
+  return NextResponse.json({ ok: true, customers, total: customers.length });
 }
 
 export async function PATCH(request: Request) {

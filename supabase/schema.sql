@@ -250,7 +250,114 @@ grant execute on function public.reserve_order_stock(jsonb) to service_role;
 revoke execute on function public.restore_order_stock(jsonb) from public, anon, authenticated;
 grant execute on function public.restore_order_stock(jsonb) to service_role;
 
--- 8. Orders Security Enhancements
+-- 8. Orders Security & High-Scale Performance Enhancements
 -- Receipt token for privacy-safe guest order lookups (prevents IDOR order enumeration)
 alter table public.orders add column if not exists receipt_token text;
 create index if not exists idx_orders_receipt_token on public.orders (receipt_token);
+create index if not exists idx_orders_created_status on public.orders (created_at desc, status);
+
+-- 9. Dedicated Customers Table (High-Scale: supports 100,000+ accounts with zero JSON race conditions)
+create table if not exists public.customers (
+  id text primary key,
+  name text not null,
+  phone text not null,
+  email text,
+  address text not null default '',
+  city text not null default '',
+  password text not null,
+  reset_token text,
+  reset_code text,
+  reset_expires_at timestamptz,
+  reset_attempts integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_customers_phone on public.customers (phone);
+create index if not exists idx_customers_email on public.customers (lower(email));
+create index if not exists idx_customers_created_at on public.customers (created_at desc);
+
+alter table public.customers enable row level security;
+
+drop trigger if exists trg_customers_updated_at on public.customers;
+create trigger trg_customers_updated_at
+before update on public.customers
+for each row execute function public.set_updated_at();
+
+-- 10. Dedicated Contact Messages Table (High-Scale: server-side pagination & instant filtering)
+create table if not exists public.contact_messages (
+  id text primary key,
+  name text not null,
+  contact text not null,
+  topic text not null default 'Order Inquiry',
+  message text not null,
+  status text not null default 'unread' check (status in ('unread', 'resolved')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_contact_messages_status on public.contact_messages (status);
+create index if not exists idx_contact_messages_created_at on public.contact_messages (created_at desc);
+
+alter table public.contact_messages enable row level security;
+
+drop trigger if exists trg_contact_messages_updated_at on public.contact_messages;
+create trigger trg_contact_messages_updated_at
+before update on public.contact_messages
+for each row execute function public.set_updated_at();
+
+-- 11. Safe One-Time Data Migration from Legacy JSON Rows (preserves existing customers & messages)
+do $$
+declare
+  legacy_customers jsonb;
+  legacy_messages jsonb;
+  rec jsonb;
+begin
+  select description::jsonb into legacy_customers
+  from public.coupons
+  where id = '__system_customers_registry__'
+  limit 1;
+
+  if legacy_customers is not null and jsonb_typeof(legacy_customers) = 'array' then
+    for rec in select * from jsonb_array_elements(legacy_customers)
+    loop
+      insert into public.customers (id, name, phone, email, address, city, password, created_at)
+      values (
+        coalesce(rec->>'id', 'USR-MIGRATED-' || substr(md5(random()::text), 1, 8)),
+        coalesce(rec->>'name', 'Customer'),
+        coalesce(rec->>'phone', ''),
+        nullif(rec->>'email', ''),
+        coalesce(rec->>'address', ''),
+        coalesce(rec->>'city', ''),
+        coalesce(rec->>'password', ''),
+        coalesce((rec->>'createdAt')::timestamptz, now())
+      )
+      on conflict (id) do nothing;
+    end loop;
+  end if;
+
+  select description::jsonb into legacy_messages
+  from public.coupons
+  where id = '__system_contact_messages__'
+  limit 1;
+
+  if legacy_messages is not null and jsonb_typeof(legacy_messages) = 'array' then
+    for rec in select * from jsonb_array_elements(legacy_messages)
+    loop
+      insert into public.contact_messages (id, name, contact, topic, message, status, created_at)
+      values (
+        coalesce(rec->>'id', 'msg-migrated-' || substr(md5(random()::text), 1, 8)),
+        coalesce(rec->>'name', 'Customer'),
+        coalesce(rec->>'contact', ''),
+        coalesce(rec->>'topic', 'Order Inquiry'),
+        coalesce(rec->>'message', ''),
+        case when rec->>'status' = 'resolved' then 'resolved' else 'unread' end,
+        coalesce((rec->>'createdAt')::timestamptz, now())
+      )
+      on conflict (id) do nothing;
+    end loop;
+  end if;
+exception when others then
+  -- Ignore malformed legacy JSON safely
+  null;
+end $$;

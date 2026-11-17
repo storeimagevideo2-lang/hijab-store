@@ -299,9 +299,13 @@ export function AdminDashboard({
   initialAnalytics,
   initialProducts,
   initialOrders,
+  initialOrdersTotal,
   initialReviews = [],
   initialRegisteredCustomers = [],
+  initialRegisteredCustomersTotal,
   initialContactMessages = [],
+  initialContactMessagesTotal,
+  initialUnreadContactCount,
   initialSection = "dashboard",
 }: {
   initialAuthenticated: boolean;
@@ -309,9 +313,13 @@ export function AdminDashboard({
   initialAnalytics: DashboardAnalyticsResponse;
   initialProducts: AdminProductRecord[];
   initialOrders: AdminOrderRecord[];
+  initialOrdersTotal?: number;
   initialReviews?: AdminReviewRecord[];
   initialRegisteredCustomers?: PublicCustomerAccount[];
+  initialRegisteredCustomersTotal?: number;
   initialContactMessages?: ContactMessageRecord[];
+  initialContactMessagesTotal?: number;
+  initialUnreadContactCount?: number;
   initialSection?: AdminSectionId;
 }) {
   const [authenticated, setAuthenticated] = useState(initialAuthenticated);
@@ -372,10 +380,6 @@ export function AdminDashboard({
     initialContactMessages,
   );
   const [selectedContactMessageId, setSelectedContactMessageId] = useState<string | null>(null);
-  const selectedContactMessage = useMemo(
-    () => contactMessages.find((m) => m.id === selectedContactMessageId) ?? null,
-    [contactMessages, selectedContactMessageId],
-  );
   const [resettingCustomerId, setResettingCustomerId] = useState<string | null>(null);
   const [resetPasswordInput, setResetPasswordInput] = useState("");
   const [savingCustomerReset, setSavingCustomerReset] = useState(false);
@@ -386,10 +390,6 @@ export function AdminDashboard({
   const pendingReviewsCount = useMemo(
     () => reviews.filter((r) => r.status === "pending").length,
     [reviews],
-  );
-  const unreadContactMessagesCount = useMemo(
-    () => contactMessages.filter((m) => m.status === "unread").length,
-    [contactMessages],
   );
 
   const [loadingData, setLoadingData] = useState(false);
@@ -412,7 +412,9 @@ export function AdminDashboard({
   const [orderPage, setOrderPage] = useState(1);
   const [orderPageSize, setOrderPageSize] = useState(20);
   const [serverOrders, setServerOrders] = useState<AdminOrderRecord[] | null>(null);
-  const [serverOrdersTotal, setServerOrdersTotal] = useState<number>(initialOrders.length);
+  const [serverOrdersTotal, setServerOrdersTotal] = useState<number>(
+    initialOrdersTotal ?? initialOrders.length,
+  );
   const [serverOrdersLoading, setServerOrdersLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<AdminOrderRecord | null>(null);
   const [showManualOrderModal, setShowManualOrderModal] = useState(false);
@@ -425,12 +427,45 @@ export function AdminDashboard({
   const [registeredCustomerSearch, setRegisteredCustomerSearch] = useState("");
   const [registeredCustomerPage, setRegisteredCustomerPage] = useState(1);
   const [registeredCustomerPageSize, setRegisteredCustomerPageSize] = useState(10);
+  const [serverCustomers, setServerCustomers] = useState<PublicCustomerAccount[] | null>(null);
+  const [serverCustomersTotal, setServerCustomersTotal] = useState<number>(
+    initialRegisteredCustomersTotal ?? initialRegisteredCustomers.length,
+  );
+  const [serverCustomersLoading, setServerCustomersLoading] = useState(false);
   const [contactSearch, setContactSearch] = useState("");
   const [contactStatusFilter, setContactStatusFilter] = useState<"all" | "unread" | "resolved">(
     "all",
   );
   const [contactPage, setContactPage] = useState(1);
   const [contactPageSize, setContactPageSize] = useState(10);
+  const [serverContactMessages, setServerContactMessages] = useState<ContactMessageRecord[] | null>(
+    null,
+  );
+  const [serverContactMessagesTotal, setServerContactMessagesTotal] = useState<number>(
+    initialContactMessagesTotal ?? initialContactMessages.length,
+  );
+  const [serverUnreadContactCount, setServerUnreadContactCount] = useState<number | null>(
+    initialUnreadContactCount ?? null,
+  );
+  const [serverContactsLoading, setServerContactsLoading] = useState(false);
+  const [contactsReloadTick, setContactsReloadTick] = useState(0);
+
+  const selectedContactMessage = useMemo(() => {
+    const source = serverContactMessages ?? contactMessages;
+    return (
+      source.find((m) => m.id === selectedContactMessageId) ??
+      contactMessages.find((m) => m.id === selectedContactMessageId) ??
+      null
+    );
+  }, [serverContactMessages, contactMessages, selectedContactMessageId]);
+
+  const unreadContactMessagesCount = useMemo(
+    () =>
+      serverUnreadContactCount !== null
+        ? serverUnreadContactCount
+        : contactMessages.filter((m) => m.status === "unread").length,
+    [serverUnreadContactCount, contactMessages],
+  );
   const [topCustomerSearch, setTopCustomerSearch] = useState("");
   const [topCustomerPage, setTopCustomerPage] = useState(1);
   const [topCustomerPageSize, setTopCustomerPageSize] = useState(10);
@@ -581,9 +616,15 @@ export function AdminDashboard({
   async function handleToggleContactMessageStatus(msg: ContactMessageRecord) {
     const nextStatus: "unread" | "resolved" = msg.status === "unread" ? "resolved" : "unread";
     const prev = [...contactMessages];
+    const prevServer = serverContactMessages ? [...serverContactMessages] : null;
     setContactMessages((list) =>
       list.map((m) => (m.id === msg.id ? { ...m, status: nextStatus } : m)),
     );
+    if (serverContactMessages) {
+      setServerContactMessages((list) =>
+        list ? list.map((m) => (m.id === msg.id ? { ...m, status: nextStatus } : m)) : list,
+      );
+    }
     try {
       const res = await fetch("/api/contact", {
         method: "PATCH",
@@ -592,25 +633,37 @@ export function AdminDashboard({
       });
       if (!res.ok) {
         setContactMessages(prev);
+        if (prevServer) setServerContactMessages(prevServer);
+      } else {
+        setContactsReloadTick((t) => t + 1);
       }
     } catch {
       setContactMessages(prev);
+      if (prevServer) setServerContactMessages(prevServer);
     }
   }
 
   async function handleDeleteContactMessage(id: string) {
     if (!window.confirm("Delete this customer contact message?")) return;
     const prev = [...contactMessages];
+    const prevServer = serverContactMessages ? [...serverContactMessages] : null;
     setContactMessages((list) => list.filter((m) => m.id !== id));
+    if (serverContactMessages) {
+      setServerContactMessages((list) => (list ? list.filter((m) => m.id !== id) : list));
+    }
     try {
       const res = await fetch(`/api/contact?id=${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
       if (!res.ok) {
         setContactMessages(prev);
+        if (prevServer) setServerContactMessages(prevServer);
+      } else {
+        setContactsReloadTick((t) => t + 1);
       }
     } catch {
       setContactMessages(prev);
+      if (prevServer) setServerContactMessages(prevServer);
     }
   }
 
@@ -861,9 +914,13 @@ export function AdminDashboard({
           analytics: DashboardAnalyticsResponse;
           products: AdminProductRecord[];
           orders: AdminOrderRecord[];
+          ordersTotal?: number;
           reviews?: AdminReviewRecord[];
           registeredCustomers?: PublicCustomerAccount[];
+          registeredCustomersTotal?: number;
           contactMessages?: ContactMessageRecord[];
+          contactMessagesTotal?: number;
+          unreadContactMessagesCount?: number;
         };
         setAnalytics(data.analytics);
         if (data.analytics?.settings) {
@@ -932,14 +989,26 @@ export function AdminDashboard({
         }
         setProducts(data.products);
         setOrders(data.orders);
+        if (typeof data.ordersTotal === "number") {
+          setServerOrdersTotal(data.ordersTotal);
+        }
         if (Array.isArray(data.reviews)) {
           setReviews(data.reviews);
         }
         if (Array.isArray(data.registeredCustomers)) {
           setRegisteredCustomers(data.registeredCustomers);
         }
+        if (typeof data.registeredCustomersTotal === "number") {
+          setServerCustomersTotal(data.registeredCustomersTotal);
+        }
         if (Array.isArray(data.contactMessages)) {
           setContactMessages(data.contactMessages);
+        }
+        if (typeof data.contactMessagesTotal === "number") {
+          setServerContactMessagesTotal(data.contactMessagesTotal);
+        }
+        if (typeof data.unreadContactMessagesCount === "number") {
+          setServerUnreadContactCount(data.unreadContactMessagesCount);
         }
       } catch (err) {
         setApiError(err instanceof Error ? err.message : "Failed to fetch analytics.");
@@ -2544,6 +2613,122 @@ export function AdminDashboard({
     safeProductPage * productPageSize,
   );
 
+  // True Server-Side Pagination for Registered Customers (supports 100,000+ accounts via public.customers)
+  useEffect(() => {
+    if (!authenticated || activeSection !== "customers") return;
+    const controller = new AbortController();
+    const q = (registeredCustomerSearch || globalSearch).trim();
+
+    const timer = window.setTimeout(async () => {
+      setServerCustomersLoading(true);
+      try {
+        const params = new URLSearchParams({
+          page: String(registeredCustomerPage),
+          limit: String(registeredCustomerPageSize),
+        });
+        if (q) params.set("search", q);
+
+        const res = await fetch(`/api/admin/customers?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          customers?: PublicCustomerAccount[];
+          total?: number;
+        };
+        if (Array.isArray(data.customers)) {
+          setServerCustomers(data.customers);
+          setServerCustomersTotal(
+            typeof data.total === "number" ? data.total : data.customers.length,
+          );
+        }
+      } catch (err) {
+        if ((err as Error)?.name !== "AbortError") {
+          // Keep existing slice
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setServerCustomersLoading(false);
+        }
+      }
+    }, q ? 250 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    authenticated,
+    activeSection,
+    registeredCustomerPage,
+    registeredCustomerPageSize,
+    registeredCustomerSearch,
+    globalSearch,
+    registeredCustomers,
+  ]);
+
+  // True Server-Side Pagination for Contact Inquiries (supports 100,000+ messages via public.contact_messages)
+  useEffect(() => {
+    if (!authenticated || activeSection !== "customers") return;
+    const controller = new AbortController();
+    const q = (contactSearch || globalSearch).trim();
+
+    const timer = window.setTimeout(async () => {
+      setServerContactsLoading(true);
+      try {
+        const params = new URLSearchParams({
+          page: String(contactPage),
+          limit: String(contactPageSize),
+        });
+        if (contactStatusFilter !== "all") params.set("status", contactStatusFilter);
+        if (q) params.set("search", q);
+
+        const res = await fetch(`/api/contact?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          messages?: ContactMessageRecord[];
+          total?: number;
+          unreadCount?: number;
+        };
+        if (Array.isArray(data.messages)) {
+          setServerContactMessages(data.messages);
+          setServerContactMessagesTotal(
+            typeof data.total === "number" ? data.total : data.messages.length,
+          );
+          if (typeof data.unreadCount === "number") {
+            setServerUnreadContactCount(data.unreadCount);
+          }
+        }
+      } catch (err) {
+        if ((err as Error)?.name !== "AbortError") {
+          // Keep existing slice
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setServerContactsLoading(false);
+        }
+      }
+    }, q ? 250 : 0);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [
+    authenticated,
+    activeSection,
+    contactPage,
+    contactPageSize,
+    contactStatusFilter,
+    contactSearch,
+    globalSearch,
+    contactsReloadTick,
+  ]);
+
   // Filtered & Paginated Registered Customers
   const filteredRegisteredCustomers = useMemo(() => {
     const q = (registeredCustomerSearch || globalSearch).trim().toLowerCase();
@@ -2566,6 +2751,9 @@ export function AdminDashboard({
     (safeRegisteredCustomerPage - 1) * registeredCustomerPageSize,
     safeRegisteredCustomerPage * registeredCustomerPageSize,
   );
+  const displayedRegisteredCustomers = serverCustomers ?? paginatedRegisteredCustomers;
+  const displayedRegisteredCustomersTotal =
+    serverCustomers !== null ? serverCustomersTotal : filteredRegisteredCustomers.length;
 
   // Filtered & Paginated Customer Contact Inquiries
   const filteredContactMessages = useMemo(() => {
@@ -2590,6 +2778,9 @@ export function AdminDashboard({
     (safeContactPage - 1) * contactPageSize,
     safeContactPage * contactPageSize,
   );
+  const displayedContactMessages = serverContactMessages ?? paginatedContactMessages;
+  const displayedContactMessagesTotal =
+    serverContactMessages !== null ? serverContactMessagesTotal : filteredContactMessages.length;
 
   // Filtered & Paginated Top Customers Directory
   const filteredTopCustomers = useMemo(() => {
@@ -4606,7 +4797,7 @@ export function AdminDashboard({
                   <div>
                     <h3>
                       Registered Customer Accounts &amp; Password Reset (
-                      {filteredRegisteredCustomers.length})
+                      {displayedRegisteredCustomersTotal.toLocaleString()})
                     </h3>
                     <p className="adm-panel-sub">
                       Manage registered storefront accounts and reset passwords when a customer
@@ -4627,7 +4818,7 @@ export function AdminDashboard({
                   </div>
                 </div>
 
-                {filteredRegisteredCustomers.length === 0 ? (
+                {displayedRegisteredCustomers.length === 0 && !serverCustomersLoading ? (
                   <div className="adm-empty-state">
                     <Users size={28} />
                     <h4>
@@ -4657,7 +4848,7 @@ export function AdminDashboard({
                           </tr>
                         </thead>
                         <tbody>
-                          {paginatedRegisteredCustomers.map((acct) => {
+                          {displayedRegisteredCustomers.map((acct) => {
                           const isResetting = resettingCustomerId === acct.id;
                           return (
                             <tr key={acct.id}>
@@ -4733,10 +4924,11 @@ export function AdminDashboard({
                     </table>
                   </div>
                   <AdminPagination
-                    page={safeRegisteredCustomerPage}
+                    page={registeredCustomerPage}
                     pageSize={registeredCustomerPageSize}
-                    totalItems={filteredRegisteredCustomers.length}
+                    totalItems={displayedRegisteredCustomersTotal}
                     itemLabel="accounts"
+                    loading={serverCustomersLoading}
                     onPageChange={setRegisteredCustomerPage}
                     onPageSizeChange={setRegisteredCustomerPageSize}
                   />
@@ -4749,7 +4941,7 @@ export function AdminDashboard({
                 <div className="adm-panel-head">
                   <div>
                     <h3>
-                      Customer Contact Inquiries ({filteredContactMessages.length} shown ·{" "}
+                      Customer Contact Inquiries ({displayedContactMessagesTotal.toLocaleString()} shown ·{" "}
                       {unreadContactMessagesCount} unread)
                     </h3>
                     <p className="adm-panel-sub">
@@ -4775,16 +4967,14 @@ export function AdminDashboard({
                         setContactPage(1);
                       }}
                     >
-                      <option value="all">All Messages ({contactMessages.length})</option>
+                      <option value="all">All Messages</option>
                       <option value="unread">Unread ({unreadContactMessagesCount})</option>
-                      <option value="resolved">
-                        Resolved ({contactMessages.length - unreadContactMessagesCount})
-                      </option>
+                      <option value="resolved">Resolved</option>
                     </select>
                   </div>
                 </div>
 
-                {filteredContactMessages.length === 0 ? (
+                {displayedContactMessages.length === 0 && !serverContactsLoading ? (
                   <div className="adm-empty-state">
                     <MessageSquare size={28} />
                     <h4>
@@ -4813,7 +5003,7 @@ export function AdminDashboard({
                           </tr>
                         </thead>
                         <tbody>
-                          {paginatedContactMessages.map((msg) => (
+                          {displayedContactMessages.map((msg) => (
                           <tr key={msg.id}>
                             <td>
                               <span
@@ -4879,10 +5069,11 @@ export function AdminDashboard({
                     </table>
                   </div>
                   <AdminPagination
-                    page={safeContactPage}
+                    page={contactPage}
                     pageSize={contactPageSize}
-                    totalItems={filteredContactMessages.length}
+                    totalItems={displayedContactMessagesTotal}
                     itemLabel="messages"
+                    loading={serverContactsLoading}
                     onPageChange={setContactPage}
                     onPageSizeChange={setContactPageSize}
                   />

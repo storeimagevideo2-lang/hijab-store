@@ -2021,6 +2021,59 @@ export async function getPaginatedStoreOrders(options: {
   };
 }
 
+/**
+ * High-scale analytics window loader:
+ * Fetches ONLY orders created on or after `sinceIso` (using indexed `created_at >= sinceIso`
+ * with 1,000-row Range batching) so analytics stays fast even with 100,000+ lifetime orders.
+ */
+export async function getStoreOrdersSince(sinceIso?: string): Promise<AdminOrderRecord[]> {
+  if (!sinceIso) {
+    return getAllStoreOrders();
+  }
+
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const PAGE_SIZE = 1000;
+      const MAX_BATCHES = 15;
+      const allRows: SupabaseOrderRow[] = [];
+      let start = 0;
+
+      for (let batch = 0; batch < MAX_BATCHES; batch++) {
+        const end = start + PAGE_SIZE - 1;
+        const endpoint = `${config.supabaseUrl}/rest/v1/orders?select=*&created_at=gte.${encodeURIComponent(sinceIso)}&order=created_at.desc`;
+        const response = await fetch(endpoint, {
+          headers: {
+            ...supabaseHeaders(true),
+            Range: `${start}-${end}`,
+          },
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          if (batch === 0) throw new Error(`Supabase orders window fetch failed (${response.status})`);
+          break;
+        }
+        const rows = (await response.json()) as SupabaseOrderRow[];
+        allRows.push(...rows);
+        if (rows.length < PAGE_SIZE) {
+          break;
+        }
+        start += PAGE_SIZE;
+      }
+      return allRows.map(parseSupabaseOrderRow);
+    } catch {
+      // Fallback to local store
+    }
+  }
+
+  const local = await readLocalStore();
+  const cutoffMs = new Date(sinceIso).getTime();
+  return local.orders.filter((o) => {
+    const t = new Date(o.createdAt).getTime();
+    return Number.isNaN(cutoffMs) || Number.isNaN(t) || t >= cutoffMs;
+  });
+}
+
 export function normalizePhoneForMatch(phone?: string | null): string {
   if (!phone) return "";
   const digits = phone.replace(/\D/g, "");
@@ -3596,11 +3649,192 @@ export async function deleteStoreReview(id: string): Promise<{ ok: boolean }> {
   return { ok: true };
 }
 
+type SupabaseCustomerRow = {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  address: string | null;
+  city: string | null;
+  password: string;
+  reset_token?: string | null;
+  reset_code?: string | null;
+  reset_expires_at?: string | null;
+  reset_attempts?: number | null;
+  created_at: string;
+};
+
+function parseSupabaseCustomerRow(row: SupabaseCustomerRow): CustomerAccountRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email || undefined,
+    address: row.address || undefined,
+    city: row.city || undefined,
+    password: row.password,
+    resetToken: row.reset_token ?? null,
+    resetCode: row.reset_code ?? null,
+    resetExpiresAt: row.reset_expires_at ?? null,
+    resetAttempts: Number(row.reset_attempts ?? 0),
+    createdAt: row.created_at,
+  };
+}
+
+function toSupabaseCustomerRow(record: CustomerAccountRecord): SupabaseCustomerRow {
+  return {
+    id: record.id,
+    name: record.name,
+    phone: record.phone,
+    email: record.email ?? null,
+    address: record.address ?? "",
+    city: record.city ?? "",
+    password: record.password,
+    reset_token: record.resetToken ?? null,
+    reset_code: record.resetCode ?? null,
+    reset_expires_at: record.resetExpiresAt ?? null,
+    reset_attempts: record.resetAttempts ?? 0,
+    created_at: record.createdAt,
+  };
+}
+
+async function upsertSingleCustomerToSupabaseTable(
+  record: CustomerAccountRecord,
+): Promise<boolean> {
+  const config = getBackendConfig();
+  if (!config.supabaseWriteConfigured) return false;
+  try {
+    const res = await fetch(`${config.supabaseUrl}/rest/v1/customers?on_conflict=id`, {
+      method: "POST",
+      headers: {
+        ...supabaseHeaders(true),
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify([toSupabaseCustomerRow(record)]),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export type PaginatedCustomersResult = {
+  customers: Array<Omit<CustomerAccountRecord, "password">>;
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+};
+
+export async function getPaginatedCustomerAccounts(options: {
+  page?: number;
+  limit?: number;
+  search?: string;
+}): Promise<PaginatedCustomersResult> {
+  const page = Math.max(1, Math.floor(Number(options.page) || 1));
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 20)));
+  const offset = (page - 1) * limit;
+  const rawSearch = options.search?.trim() || "";
+  const safeSearch = sanitizePostgrestSearch(rawSearch);
+
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const params: string[] = [
+        "select=id,name,phone,email,address,city,created_at",
+        "order=created_at.desc",
+        `limit=${limit}`,
+        `offset=${offset}`,
+      ];
+      if (safeSearch) {
+        const pattern = encodeURIComponent(`*${safeSearch}*`);
+        params.push(
+          `or=(id.ilike.${pattern},name.ilike.${pattern},phone.ilike.${pattern},email.ilike.${pattern},city.ilike.${pattern})`,
+        );
+      }
+
+      const res = await fetch(`${config.supabaseUrl}/rest/v1/customers?${params.join("&")}`, {
+        headers: {
+          ...supabaseHeaders(true),
+          Prefer: "count=exact",
+        },
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const rows = (await res.json()) as Array<Omit<SupabaseCustomerRow, "password">>;
+        const contentRange = res.headers.get("content-range") || "";
+        const totalMatch = contentRange.match(/\/(\d+)$/);
+        const total = totalMatch ? Number(totalMatch[1]) : offset + rows.length;
+        const totalPages = Math.max(1, Math.ceil(total / limit));
+        return {
+          customers: rows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            phone: row.phone,
+            email: row.email || undefined,
+            address: row.address || undefined,
+            city: row.city || undefined,
+            createdAt: row.created_at,
+          })),
+          total,
+          page: Math.min(page, totalPages),
+          limit,
+          totalPages,
+        };
+      }
+    } catch {
+      // Fallback to legacy JSON row / local store
+    }
+  }
+
+  const all = await getCustomerAccountsPublic();
+  const q = rawSearch.toLowerCase();
+  const filtered = q
+    ? all.filter(
+        (acct) =>
+          acct.name.toLowerCase().includes(q) ||
+          acct.phone.toLowerCase().includes(q) ||
+          (acct.email ?? "").toLowerCase().includes(q) ||
+          (acct.city ?? "").toLowerCase().includes(q) ||
+          acct.id.toLowerCase().includes(q),
+      )
+    : all;
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * limit;
+  return {
+    customers: filtered.slice(start, start + limit),
+    total,
+    page: safePage,
+    limit,
+    totalPages,
+  };
+}
+
 export async function getCustomerAccounts(): Promise<CustomerAccountRecord[]> {
   const local = await readLocalStore();
   const config = getBackendConfig();
 
   if (config.supabaseConfigured) {
+    // 1. Prefer dedicated high-scale `public.customers` table
+    try {
+      const tableRes = await fetch(
+        `${config.supabaseUrl}/rest/v1/customers?select=*&order=created_at.desc&limit=1000`,
+        {
+          headers: supabaseHeaders(true),
+          cache: "no-store",
+        },
+      );
+      if (tableRes.ok) {
+        const rows = (await tableRes.json()) as SupabaseCustomerRow[];
+        return rows.map(parseSupabaseCustomerRow);
+      }
+    } catch {
+      // Fall through to legacy JSON row if table not created yet
+    }
+
+    // 2. Legacy fallback: `__system_customers_registry__` row in coupons table
     try {
       const res = await fetch(
         `${config.supabaseUrl}/rest/v1/coupons?select=description&id=eq.${encodeURIComponent(SYSTEM_CUSTOMERS_ROW_ID)}&limit=1`,
@@ -3624,6 +3858,20 @@ export async function getCustomerAccounts(): Promise<CustomerAccountRecord[]> {
   }
 
   return local.customers ?? [];
+}
+
+async function saveSingleCustomerAccount(
+  local: LocalRuntimeStore,
+  record: CustomerAccountRecord,
+  fallbackAccounts: CustomerAccountRecord[],
+): Promise<void> {
+  const savedToDedicatedTable = await upsertSingleCustomerToSupabaseTable(record);
+  if (savedToDedicatedTable) {
+    local.customers = fallbackAccounts;
+    await writeLocalStore(local);
+    return;
+  }
+  await saveCustomerAccounts(local, fallbackAccounts);
 }
 
 async function saveCustomerAccounts(
@@ -3738,7 +3986,7 @@ export async function registerCustomerAccount(input: {
   };
 
   accounts.unshift(record);
-  await saveCustomerAccounts(local, accounts);
+  await saveSingleCustomerAccount(local, record, accounts);
 
   const { password: _pw, ...profile } = record;
   void _pw;
@@ -3785,7 +4033,7 @@ export async function upsertCustomerAccount(input: {
     accounts.unshift(record);
   }
 
-  await saveCustomerAccounts(local, accounts);
+  await saveSingleCustomerAccount(local, record, accounts);
   const { password: _pw, ...profile } = record;
   void _pw;
   return profile;
@@ -3848,11 +4096,12 @@ export async function changeCustomerAccountPassword(input: {
   if (!input.newPassword || input.newPassword.length < 8) {
     return { ok: false, error: "New password must be at least 8 characters long." };
   }
-  accounts[idx] = {
+  const updatedPwdAccount = {
     ...current,
     password: hashCustomerPassword(input.newPassword),
   };
-  await saveCustomerAccounts(local, accounts);
+  accounts[idx] = updatedPwdAccount;
+  await saveSingleCustomerAccount(local, updatedPwdAccount, accounts);
   return { ok: true };
 }
 
@@ -3892,15 +4141,16 @@ export async function createPasswordResetRequest(rawEmail: string): Promise<
   const code = randomInt(100000, 1000000).toString();
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-  accounts[idx] = {
+  const updatedResetReq = {
     ...account,
     resetToken: token,
     resetCode: code,
     resetExpiresAt: expiresAt,
     resetAttempts: 0,
   };
+  accounts[idx] = updatedResetReq;
 
-  await saveCustomerAccounts(local, accounts);
+  await saveSingleCustomerAccount(local, updatedResetReq, accounts);
 
   return {
     ok: true,
@@ -4110,7 +4360,7 @@ export async function resetCustomerPassword(
     };
   }
 
-  accounts[idx] = {
+  const updatedAfterReset = {
     ...account,
     password: hashCustomerPassword(newPassword),
     resetToken: null,
@@ -4118,8 +4368,9 @@ export async function resetCustomerPassword(
     resetExpiresAt: null,
     resetAttempts: 0,
   };
+  accounts[idx] = updatedAfterReset;
 
-  await saveCustomerAccounts(local, accounts);
+  await saveSingleCustomerAccount(local, updatedAfterReset, accounts);
 
   return {
     ok: true,
@@ -4156,7 +4407,7 @@ export async function updateCustomerAccountProfile(input: {
   };
 
   accounts[idx] = updated;
-  await saveCustomerAccounts(local, accounts);
+  await saveSingleCustomerAccount(local, updated, accounts);
   const { password: _pw, ...profile } = updated;
   void _pw;
   return profile;
@@ -4201,10 +4452,145 @@ export async function adminResetCustomerPassword(input: {
     title: `Customer password reset: ${updated.name}`,
     detail: `Account ${updated.id} (${updated.phone}) password was reset by Admin`,
   });
-  await saveCustomerAccounts(local, accounts);
+  await saveSingleCustomerAccount(local, updated, accounts);
   const { password: _pw, ...profile } = updated;
   void _pw;
   return { ok: true, user: profile };
+}
+
+type SupabaseContactMessageRow = {
+  id: string;
+  name: string;
+  contact: string;
+  topic: string;
+  message: string;
+  status: "unread" | "resolved";
+  created_at: string;
+};
+
+function parseSupabaseContactRow(row: SupabaseContactMessageRow): ContactMessageRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    contact: row.contact,
+    topic: row.topic,
+    message: row.message,
+    status: row.status === "resolved" ? "resolved" : "unread",
+    createdAt: row.created_at,
+  };
+}
+
+export type PaginatedContactMessagesResult = {
+  messages: ContactMessageRecord[];
+  total: number;
+  unreadCount: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+};
+
+export async function getPaginatedContactMessages(options: {
+  page?: number;
+  limit?: number;
+  status?: string;
+  search?: string;
+}): Promise<PaginatedContactMessagesResult> {
+  const page = Math.max(1, Math.floor(Number(options.page) || 1));
+  const limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit) || 20)));
+  const offset = (page - 1) * limit;
+  const status = options.status?.trim();
+  const rawSearch = options.search?.trim() || "";
+  const safeSearch = sanitizePostgrestSearch(rawSearch);
+
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const params: string[] = [
+        "select=*",
+        "order=created_at.desc",
+        `limit=${limit}`,
+        `offset=${offset}`,
+      ];
+      if (status && status !== "all" && status !== "ALL") {
+        params.push(`status=eq.${encodeURIComponent(status)}`);
+      }
+      if (safeSearch) {
+        const pattern = encodeURIComponent(`*${safeSearch}*`);
+        params.push(
+          `or=(name.ilike.${pattern},contact.ilike.${pattern},topic.ilike.${pattern},message.ilike.${pattern})`,
+        );
+      }
+
+      const [res, unreadRes] = await Promise.all([
+        fetch(`${config.supabaseUrl}/rest/v1/contact_messages?${params.join("&")}`, {
+          headers: {
+            ...supabaseHeaders(true),
+            Prefer: "count=exact",
+          },
+          cache: "no-store",
+        }),
+        fetch(`${config.supabaseUrl}/rest/v1/contact_messages?select=id&status=eq.unread`, {
+          method: "HEAD",
+          headers: {
+            ...supabaseHeaders(true),
+            Prefer: "count=exact",
+          },
+          cache: "no-store",
+        }),
+      ]);
+
+      if (res.ok) {
+        const rows = (await res.json()) as SupabaseContactMessageRow[];
+        const contentRange = res.headers.get("content-range") || "";
+        const totalMatch = contentRange.match(/\/(\d+)$/);
+        const total = totalMatch ? Number(totalMatch[1]) : offset + rows.length;
+
+        const unreadRange = unreadRes.ok ? unreadRes.headers.get("content-range") || "" : "";
+        const unreadMatch = unreadRange.match(/\/(\d+)$/);
+        const unreadCount = unreadMatch
+          ? Number(unreadMatch[1])
+          : rows.filter((r) => r.status === "unread").length;
+
+        const totalPages = Math.max(1, Math.ceil(total / limit));
+        return {
+          messages: rows.map(parseSupabaseContactRow),
+          total,
+          unreadCount,
+          page: Math.min(page, totalPages),
+          limit,
+          totalPages,
+        };
+      }
+    } catch {
+      // Fallback to legacy JSON row / local store
+    }
+  }
+
+  const all = await getContactMessages();
+  const unreadCount = all.filter((m) => m.status === "unread").length;
+  const q = rawSearch.toLowerCase();
+  const filtered = all.filter((msg) => {
+    if (status && status !== "all" && status !== "ALL" && msg.status !== status) return false;
+    if (!q) return true;
+    return (
+      msg.name.toLowerCase().includes(q) ||
+      msg.contact.toLowerCase().includes(q) ||
+      msg.topic.toLowerCase().includes(q) ||
+      msg.message.toLowerCase().includes(q)
+    );
+  });
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * limit;
+  return {
+    messages: filtered.slice(start, start + limit),
+    total,
+    unreadCount,
+    page: safePage,
+    limit,
+    totalPages,
+  };
 }
 
 export async function getContactMessages(): Promise<ContactMessageRecord[]> {
@@ -4212,6 +4598,24 @@ export async function getContactMessages(): Promise<ContactMessageRecord[]> {
   const config = getBackendConfig();
 
   if (config.supabaseConfigured) {
+    // 1. Prefer dedicated high-scale `public.contact_messages` table
+    try {
+      const tableRes = await fetch(
+        `${config.supabaseUrl}/rest/v1/contact_messages?select=*&order=created_at.desc&limit=1000`,
+        {
+          headers: supabaseHeaders(true),
+          cache: "no-store",
+        },
+      );
+      if (tableRes.ok) {
+        const rows = (await tableRes.json()) as SupabaseContactMessageRow[];
+        return rows.map(parseSupabaseContactRow);
+      }
+    } catch {
+      // Fall through to legacy JSON row
+    }
+
+    // 2. Legacy fallback: `__system_contact_messages__` row in coupons table
     try {
       const res = await fetch(
         `${config.supabaseUrl}/rest/v1/coupons?select=description&id=eq.${encodeURIComponent(SYSTEM_CONTACT_MESSAGES_ROW_ID)}&limit=1`,
@@ -4278,7 +4682,6 @@ export async function createContactMessage(input: {
   message: string;
 }): Promise<ContactMessageRecord> {
   const local = await readLocalStore();
-  const messages = await getContactMessages();
   const record: ContactMessageRecord = {
     id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     name: input.name.trim(),
@@ -4289,12 +4692,46 @@ export async function createContactMessage(input: {
     createdAt: new Date().toISOString(),
   };
 
-  messages.unshift(record);
   appendActivity(local, {
     type: "settings",
     title: `New Contact Inquiry: ${record.topic}`,
     detail: `From ${record.name} (${record.contact})`,
   });
+
+  // Try direct O(1) insert into dedicated `public.contact_messages` table first
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const insertRes = await fetch(`${config.supabaseUrl}/rest/v1/contact_messages`, {
+        method: "POST",
+        headers: {
+          ...supabaseHeaders(true),
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify([
+          {
+            id: record.id,
+            name: record.name,
+            contact: record.contact,
+            topic: record.topic,
+            message: record.message,
+            status: record.status,
+            created_at: record.createdAt,
+          },
+        ]),
+      });
+      if (insertRes.ok) {
+        local.contactMessages = [record, ...(local.contactMessages ?? [])];
+        await writeLocalStore(local);
+        return record;
+      }
+    } catch {
+      // Fall through to legacy JSON row
+    }
+  }
+
+  const messages = await getContactMessages();
+  messages.unshift(record);
   await saveContactMessages(local, messages);
   return record;
 }
@@ -4303,6 +4740,35 @@ export async function updateContactMessageStatus(
   id: string,
   status: "unread" | "resolved",
 ): Promise<boolean> {
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const patchRes = await fetch(
+        `${config.supabaseUrl}/rest/v1/contact_messages?id=eq.${encodeURIComponent(id)}`,
+        {
+          method: "PATCH",
+          headers: {
+            ...supabaseHeaders(true),
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify({ status }),
+        },
+      );
+      if (patchRes.ok) {
+        const local = await readLocalStore();
+        if (local.contactMessages) {
+          local.contactMessages = local.contactMessages.map((m) =>
+            m.id === id ? { ...m, status } : m,
+          );
+          await writeLocalStore(local);
+        }
+        return true;
+      }
+    } catch {
+      // Fall through to legacy JSON row
+    }
+  }
+
   const local = await readLocalStore();
   const messages = await getContactMessages();
   const idx = messages.findIndex((m) => m.id === id);
@@ -4313,6 +4779,32 @@ export async function updateContactMessageStatus(
 }
 
 export async function deleteContactMessage(id: string): Promise<boolean> {
+  const config = getBackendConfig();
+  if (config.supabaseWriteConfigured) {
+    try {
+      const delRes = await fetch(
+        `${config.supabaseUrl}/rest/v1/contact_messages?id=eq.${encodeURIComponent(id)}`,
+        {
+          method: "DELETE",
+          headers: {
+            ...supabaseHeaders(true),
+            Prefer: "return=minimal",
+          },
+        },
+      );
+      if (delRes.ok) {
+        const local = await readLocalStore();
+        if (local.contactMessages) {
+          local.contactMessages = local.contactMessages.filter((m) => m.id !== id);
+          await writeLocalStore(local);
+        }
+        return true;
+      }
+    } catch {
+      // Fall through to legacy JSON row
+    }
+  }
+
   const local = await readLocalStore();
   const messages = await getContactMessages();
   const next = messages.filter((m) => m.id !== id);

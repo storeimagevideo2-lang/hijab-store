@@ -5,15 +5,40 @@ import {
   type DateRangePreset,
 } from "@/lib/server/analytics-engine";
 import {
-  getAllStoreOrders,
   getAllStoreProducts,
   getAllStoreReviews,
-  getContactMessages,
-  getCustomerAccountsPublic,
+  getPaginatedContactMessages,
+  getPaginatedCustomerAccounts,
+  getPaginatedStoreOrders,
   getStoreActivities,
   getStoreCoupons,
+  getStoreOrdersSince,
   getStoreSettings,
 } from "@/lib/server/store-repository";
+
+function computeAnalyticsSinceIso(preset: DateRangePreset, customStart?: string): string {
+  const now = new Date();
+  const daysBack = (days: number) => new Date(now.getTime() - days * 86_400_000).toISOString();
+
+  if (preset === "this_year") {
+    // Include previous year too for year-over-year comparison
+    return new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1)).toISOString();
+  }
+  if (preset === "custom" && customStart) {
+    const parsed = new Date(customStart);
+    if (!Number.isNaN(parsed.getTime())) {
+      // Go back an extra 65 days before customStart to cover comparison window + thisMonth KPI
+      const earlier = new Date(parsed.getTime() - 65 * 86_400_000);
+      const sixtyFiveDaysAgo = new Date(now.getTime() - 65 * 86_400_000);
+      return (earlier < sixtyFiveDaysAgo ? earlier : sixtyFiveDaysAgo).toISOString();
+    }
+  }
+  if (preset === "last_month") {
+    return daysBack(95);
+  }
+  // today, yesterday, last_7_days, last_30_days, this_month: 65 days covers current + comparison + thisMonth
+  return daysBack(65);
+}
 
 const VALID_PRESETS: DateRangePreset[] = [
   "today",
@@ -40,29 +65,33 @@ export async function GET(request: Request) {
     const startDate = searchParams.get("startDate") ?? undefined;
     const endDate = searchParams.get("endDate") ?? undefined;
 
+    const sinceIso = computeAnalyticsSinceIso(preset, startDate);
+
     const [
       products,
-      orders,
+      analyticsOrders,
+      ordersPage,
       coupons,
       settings,
       activities,
       reviews,
-      registeredCustomers,
-      contactMessages,
+      customersPage,
+      messagesPage,
     ] = await Promise.all([
       getAllStoreProducts({ bypassCache: true, includeInactive: true }),
-      getAllStoreOrders(),
+      getStoreOrdersSince(sinceIso),
+      getPaginatedStoreOrders({ page: 1, limit: 20 }),
       getStoreCoupons(),
       getStoreSettings(),
       getStoreActivities(),
       getAllStoreReviews({ status: "all" }),
-      getCustomerAccountsPublic(),
-      getContactMessages(),
+      getPaginatedCustomerAccounts({ page: 1, limit: 10 }),
+      getPaginatedContactMessages({ page: 1, limit: 10 }),
     ]);
 
     const analytics = buildDashboardAnalytics({
       products,
-      orders,
+      orders: analyticsOrders,
       coupons,
       settings,
       activities,
@@ -74,10 +103,14 @@ export async function GET(request: Request) {
     return NextResponse.json({
       analytics,
       products,
-      orders,
+      orders: ordersPage.orders,
+      ordersTotal: ordersPage.total,
       reviews,
-      registeredCustomers,
-      contactMessages,
+      registeredCustomers: customersPage.customers,
+      registeredCustomersTotal: customersPage.total,
+      contactMessages: messagesPage.messages,
+      contactMessagesTotal: messagesPage.total,
+      unreadContactMessagesCount: messagesPage.unreadCount,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to compute analytics.";

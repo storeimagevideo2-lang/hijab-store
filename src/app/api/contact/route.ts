@@ -5,16 +5,34 @@ import {
   createContactMessage,
   deleteContactMessage,
   getContactMessages,
+  getPaginatedContactMessages,
   updateContactMessageStatus,
 } from "@/lib/server/store-repository";
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getAdminSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized admin session." }, { status: 401 });
   }
+  const { searchParams } = new URL(request.url);
+  const pageParam = searchParams.get("page");
+  const limitParam = searchParams.get("limit");
+  const status = searchParams.get("status") ?? undefined;
+  const search = searchParams.get("search") ?? undefined;
+
+  if (pageParam || limitParam || status || search) {
+    const result = await getPaginatedContactMessages({
+      page: pageParam ? Number(pageParam) : 1,
+      limit: limitParam ? Number(limitParam) : 20,
+      status,
+      search,
+    });
+    return NextResponse.json({ ok: true, ...result });
+  }
+
   const messages = await getContactMessages();
-  return NextResponse.json({ messages });
+  const unreadCount = messages.filter((m) => m.status === "unread").length;
+  return NextResponse.json({ ok: true, messages, total: messages.length, unreadCount });
 }
 
 export async function POST(request: Request) {

@@ -3,13 +3,14 @@ import { getAdminSession } from "@/lib/server/admin-auth";
 import { buildDashboardAnalytics } from "@/lib/server/analytics-engine";
 import { getBackendConfig } from "@/lib/server/env";
 import {
-  getAllStoreOrders,
   getAllStoreProducts,
   getAllStoreReviews,
-  getContactMessages,
-  getCustomerAccountsPublic,
+  getPaginatedContactMessages,
+  getPaginatedCustomerAccounts,
+  getPaginatedStoreOrders,
   getStoreActivities,
   getStoreCoupons,
+  getStoreOrdersSince,
   getStoreSettings,
 } from "@/lib/server/store-repository";
 import "@/app/admin/admin.css";
@@ -44,31 +45,48 @@ export async function AdminPageView({
   const session = await getAdminSession();
   const config = getBackendConfig();
 
-  const [products, orders, coupons, settings, activities, reviews, registeredCustomers, contactMessages] = session
+  // High-scale SSR: fetch only the 65-day analytics window (not 100,000+ lifetime orders)
+  // and send only page 1 of orders, customers, and contact messages in the initial HTML payload
+  // so the dashboard stays well under Vercel's 4.5 MB response limit at 10,000+ orders/month.
+  const sixtyFiveDaysAgoIso = new Date(Date.now() - 65 * 86_400_000).toISOString();
+
+  const [
+    products,
+    analyticsOrders,
+    ordersPage,
+    coupons,
+    settings,
+    activities,
+    reviews,
+    customersPage,
+    messagesPage,
+  ] = session
     ? await Promise.all([
         getAllStoreProducts({ bypassCache: true, includeInactive: true }),
-        getAllStoreOrders(),
+        getStoreOrdersSince(sixtyFiveDaysAgoIso),
+        getPaginatedStoreOrders({ page: 1, limit: 20 }),
         getStoreCoupons(),
         getStoreSettings(),
         getStoreActivities(),
         getAllStoreReviews({ status: "all" }),
-        getCustomerAccountsPublic(),
-        getContactMessages(),
+        getPaginatedCustomerAccounts({ page: 1, limit: 10 }),
+        getPaginatedContactMessages({ page: 1, limit: 10 }),
       ])
     : [
         [],
         [],
+        { orders: [], total: 0, page: 1, limit: 20, totalPages: 1 },
         [],
         await getStoreSettings(),
         [],
         [],
-        [],
-        [],
+        { customers: [], total: 0, page: 1, limit: 10, totalPages: 1 },
+        { messages: [], total: 0, unreadCount: 0, page: 1, limit: 10, totalPages: 1 },
       ];
 
   const initialAnalytics = buildDashboardAnalytics({
     products,
-    orders,
+    orders: analyticsOrders,
     coupons,
     settings,
     activities,
@@ -87,10 +105,14 @@ export async function AdminPageView({
         }}
         initialAnalytics={initialAnalytics}
         initialProducts={products}
-        initialOrders={orders}
+        initialOrders={ordersPage.orders}
+        initialOrdersTotal={ordersPage.total}
         initialReviews={reviews}
-        initialRegisteredCustomers={registeredCustomers}
-        initialContactMessages={contactMessages}
+        initialRegisteredCustomers={customersPage.customers}
+        initialRegisteredCustomersTotal={customersPage.total}
+        initialContactMessages={messagesPage.messages}
+        initialContactMessagesTotal={messagesPage.total}
+        initialUnreadContactCount={messagesPage.unreadCount}
         initialSection={initialSection}
       />
     </main>
