@@ -106,6 +106,7 @@ export type AdminOrderRecord = Omit<Order, "status"> & {
   taxAmount: number;
   refundAmount: number;
   inventoryDeducted?: boolean;
+  receiptToken?: string | null;
   updatedAt?: string;
 };
 
@@ -241,6 +242,7 @@ type SupabaseOrderRow = {
   refund_amount?: number | null;
   total: number;
   status: AdminOrderStatus;
+  receipt_token?: string | null;
   created_at: string;
   updated_at?: string | null;
 };
@@ -1820,6 +1822,7 @@ function parseSupabaseOrderRow(row: SupabaseOrderRow): AdminOrderRecord {
     taxAmount: Number(row.tax_amount ?? 0),
     refundAmount: Number(row.refund_amount ?? 0),
     total: Number(row.total),
+    receiptToken: row.receipt_token ?? undefined,
     status: row.status as Order["status"],
     paymentStatus: row.payment_status ?? undefined,
     deliveryStatus: row.delivery_status ?? undefined,
@@ -1865,7 +1868,7 @@ export async function getAllStoreOrders(options?: {
   return orders;
 }
 
-function normalizePhoneForMatch(phone?: string | null): string {
+export function normalizePhoneForMatch(phone?: string | null): string {
   if (!phone) return "";
   const digits = phone.replace(/\D/g, "");
   // Match last 11 digits for BD numbers (e.g. +88017... vs 017...)
@@ -2197,11 +2200,22 @@ export async function recordCustomerOrder(
 
   const local = await readLocalStore();
 
+  if (!normalized.receiptToken) {
+    normalized.receiptToken = randomBytes(16).toString("hex");
+  }
+
   // Atomic stock reservation: reserve inventory before recording order
   await reserveCatalogStockForOrder(local, normalized.items);
 
   const config = getBackendConfig();
   let storage: "supabase" | "local" = "local";
+
+  if (process.env.NODE_ENV === "production" && !config.supabaseConfigured) {
+    await restoreCatalogStockForOrder(local, normalized.items);
+    throw new Error(
+      "Database service is not configured. Unable to process orders at this time. Please contact support.",
+    );
+  }
 
   if (config.supabaseConfigured) {
     try {
@@ -2227,10 +2241,11 @@ export async function recordCustomerOrder(
         refund_amount: normalized.refundAmount,
         total: normalized.total,
         status: normalized.status,
+        receipt_token: normalized.receiptToken ?? null,
         created_at: normalized.createdAt,
       };
       const endpoint = `${config.supabaseUrl}/rest/v1/orders`;
-      const response = await fetch(endpoint, {
+      let response = await fetch(endpoint, {
         method: "POST",
         headers: supabaseHeaders(true),
         body: JSON.stringify([row]),
@@ -2239,11 +2254,27 @@ export async function recordCustomerOrder(
         storage = "supabase";
       } else {
         const errText = await response.text().catch(() => "");
-        if (process.env.NODE_ENV === "production") {
-          await restoreCatalogStockForOrder(local, normalized.items);
-          throw new Error(
-            `Unable to save order to database (${response.status}: ${errText}). Please try again in a few moments or contact support.`,
-          );
+        // If receipt_token column is not yet migrated in Supabase, retry without it
+        if (errText.includes("receipt_token")) {
+          const fallbackRow = { ...row };
+          delete fallbackRow.receipt_token;
+          const retryRes = await fetch(endpoint, {
+            method: "POST",
+            headers: supabaseHeaders(true),
+            body: JSON.stringify([fallbackRow]),
+          });
+          if (retryRes.ok) {
+            storage = "supabase";
+            response = retryRes;
+          }
+        }
+        if (!response.ok) {
+          if (process.env.NODE_ENV === "production") {
+            await restoreCatalogStockForOrder(local, normalized.items);
+            throw new Error(
+              `Unable to save order to database (${response.status}: ${errText}). Please try again in a few moments or contact support.`,
+            );
+          }
         }
       }
     } catch (err) {
@@ -3285,13 +3316,18 @@ export async function createCustomerReview(input: {
   const products = await getAllStoreProducts({ includeInactive: true });
   const prod = products.find((p) => p.id === input.productId);
 
-  // Authenticate verified purchase: order must exist and must contain this product
+  // Authenticate verified purchase: order must exist, customer phone must match, and must contain this product
   let isVerifiedPurchase = false;
   if (normalizedOrderId) {
     const matchedOrders = await getStoreOrdersByIds([normalizedOrderId]);
     const matchedOrder = matchedOrders[0];
+    const orderPhoneClean = normalizePhoneForMatch(matchedOrder?.customer?.phone);
+    const inputPhoneClean = normalizePhoneForMatch(input.customerPhone);
+    const phoneMatches = Boolean(orderPhoneClean && inputPhoneClean && orderPhoneClean === inputPhoneClean);
+
     if (
       matchedOrder &&
+      phoneMatches &&
       Array.isArray(matchedOrder.items) &&
       matchedOrder.items.some((item) => item.id === input.productId || item.slug === prod?.slug)
     ) {

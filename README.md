@@ -1,6 +1,14 @@
-# NOOR — storefront preview
+# NOOR — Premium Modest Wear & Hijab Storefront
 
-A responsive hijab boutique homepage, shop and product details with light and dark themes, built with Next.js App Router, TypeScript and Tailwind CSS. Routes are `/`, `/shop` and `/products/[slug]`. There are no commerce services, cart, checkout, API routes, authentication, payments or deployment configuration.
+A full-stack, production-ready hijab boutique e-commerce web application built with Next.js App Router, TypeScript, Tailwind CSS, and Supabase.
+
+Features:
+- **Full E-commerce Experience**: Responsive storefront with light/dark theme support, catalogue filtering, product details, bag/cart, and streamlined checkout.
+- **Backend & Database**: Supabase PostgreSQL database integration with atomic stock reservation (`reserve_order_stock`), RLS policies, and resilient fallback storage.
+- **Admin Dashboard**: Manage inventory, order statuses, delivery status, customer reviews moderation, promo coupons, and store settings.
+- **Courier & Shipping Integrations**: Support for Steadfast and Pathao courier dispatch APIs, and inside/outside Dhaka shipping configurations.
+- **Customer Authentication & Security**: Secure cookie-based sessions, customer portal for order tracking, high-entropy receipt tokens protecting against IDOR attacks, and rate-limited endpoints.
+- **Analytics & Marketing**: Meta Pixel integration for PageView, ViewContent, AddToCart, InitiateCheckout, and Purchase events.
 
 ## Run locally
 

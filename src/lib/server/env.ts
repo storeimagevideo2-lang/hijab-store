@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 function isRealValue(value: string | undefined): value is string {
   if (!value) return false;
@@ -8,10 +8,15 @@ function isRealValue(value: string | undefined): value is string {
   return true;
 }
 
-// Memory-resident ephemeral secret if ADMIN_SESSION_SECRET is omitted in environment,
-// ensuring predictable hardcoded fallback keys never compromise production sessions.
+// Consistent session secret across serverless cold starts. If ADMIN_SESSION_SECRET is omitted,
+// derive a deterministic salt from ADMIN_PASSWORD so sessions survive lambda cold starts.
 let ephemeralAdminSecret: string | null = null;
-function getEphemeralAdminSecret(): string {
+function getFallbackAdminSecret(adminPassword: string): string {
+  if (adminPassword) {
+    return createHash("sha256")
+      .update(`${adminPassword}:noor-admin-session-persistent-key`)
+      .digest("hex");
+  }
   if (!ephemeralAdminSecret) {
     ephemeralAdminSecret = randomBytes(32).toString("hex");
   }
@@ -29,7 +34,8 @@ export function getBackendConfig() {
 
   const adminEmail = process.env.ADMIN_EMAIL?.trim() || "admin@noor.com";
   const adminPassword = process.env.ADMIN_PASSWORD?.trim() || "";
-  const adminSecret = process.env.ADMIN_SESSION_SECRET?.trim() || getEphemeralAdminSecret();
+  const adminSecret =
+    process.env.ADMIN_SESSION_SECRET?.trim() || getFallbackAdminSecret(adminPassword);
 
   const supabaseConfigured =
     isRealValue(supabaseUrl) &&

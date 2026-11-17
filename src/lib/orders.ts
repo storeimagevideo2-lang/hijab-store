@@ -58,6 +58,7 @@ export type Order = {
   courierProvider?: "steadfast" | "pathao" | "manual";
   courierTrackingCode?: string;
   courierConsignmentId?: string;
+  receiptToken?: string;
 };
 
 type OrdersState = { orders: readonly Order[]; ready: boolean; persistent: boolean };
@@ -117,13 +118,93 @@ function subscribe(listener: () => void) {
   };
 }
 
+function generateReceiptToken(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const array = new Uint8Array(24);
+    crypto.getRandomValues(array);
+    return Array.from(array, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+}
+
+function generateOrderId(): string {
+  const timestampPart = Date.now().toString(36).toUpperCase();
+  let randomPart = "";
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const array = new Uint8Array(5);
+    crypto.getRandomValues(array);
+    randomPart = Array.from(array, (byte) => byte.toString(36).padStart(2, "0")).join("").substring(0, 7).toUpperCase();
+  } else {
+    randomPart = Math.random().toString(36).substring(2, 7).toUpperCase();
+  }
+  return `NR-${timestampPart}-${randomPart}`;
+}
+
+export async function placeOrderAsync(
+  input: Omit<Order, "id" | "createdAt" | "status"> & { status?: OrderStatus },
+): Promise<{ ok: true; order: Order; persistent: boolean } | { ok: false; error: string }> {
+  const current = snapshot();
+  const orderId = generateOrderId();
+  const receiptToken = generateReceiptToken();
+
+  const initialStatus: OrderStatus = input.status ?? "Pending";
+  const initialPaymentStatus =
+    input.paymentMethod === "cod" ? ("Pending" as const) : ("Paid" as const);
+
+  const order: Order = {
+    ...input,
+    id: orderId,
+    createdAt: new Date().toISOString(),
+    status: initialStatus,
+    paymentStatus: input.paymentStatus ?? initialPaymentStatus,
+    deliveryStatus: input.deliveryStatus ?? "Pending Dispatch",
+    receiptToken,
+  };
+
+  if (typeof window !== "undefined") {
+    try {
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(order),
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok || !data?.ok) {
+        const errorMsg =
+          data?.error ||
+          data?.message ||
+          (response.status === 503
+            ? "Checkout service is temporarily unavailable. Please try again in a few moments."
+            : "Failed to place order. Please try again.");
+        return { ok: false, error: errorMsg };
+      }
+
+      const confirmed: Order = (data.order as Order) || order;
+      if (!confirmed.receiptToken) {
+        confirmed.receiptToken = receiptToken;
+      }
+      const result = write([confirmed, ...current.orders]);
+      return { ok: true, order: confirmed, persistent: result.persistent };
+    } catch {
+      return {
+        ok: false,
+        error: "Network error occurred while submitting your order. Please check your internet connection and try again.",
+      };
+    }
+  }
+
+  const result = write([order, ...current.orders]);
+  return { ok: true, order, persistent: result.persistent };
+}
+
 export function placeOrder(
   input: Omit<Order, "id" | "createdAt" | "status"> & { status?: OrderStatus },
 ) {
   const current = snapshot();
-  const timestampPart = Date.now().toString(36).toUpperCase();
-  const randomPart = Math.random().toString(36).substring(2, 7).toUpperCase();
-  const orderId = `NR-${timestampPart}-${randomPart}`;
+  const orderId = generateOrderId();
+  const receiptToken = generateReceiptToken();
 
   // Cash on Delivery and new customer orders start in "Pending" status
   // Only after backend admin confirmation does it show "Confirmed"
@@ -138,6 +219,7 @@ export function placeOrder(
     status: initialStatus,
     paymentStatus: input.paymentStatus ?? initialPaymentStatus,
     deliveryStatus: input.deliveryStatus ?? "Pending Dispatch",
+    receiptToken,
   };
 
   const result = write([order, ...current.orders]);
@@ -182,11 +264,16 @@ export async function syncCustomerOrders(customerFilter?: {
   }
 
   const ids = current.orders.map((o) => o.id).join(",");
+  const tokens = current.orders
+    .map((o) => o.receiptToken)
+    .filter(Boolean)
+    .join(",");
   if (!ids && !sessionPhone && !sessionEmail) return [];
 
   try {
     const params = new URLSearchParams();
     if (ids) params.set("ids", ids);
+    if (tokens) params.set("tokens", tokens);
     if (sessionPhone) params.set("phone", sessionPhone);
     if (sessionEmail) params.set("email", sessionEmail);
 

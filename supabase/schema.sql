@@ -241,3 +241,16 @@ begin
   return jsonb_build_object('success', true);
 end;
 $$;
+
+-- 7. Restrict Stock RPC Execution to service_role only
+-- Prevents anonymous or authenticated client-side users from directly modifying inventory via REST API
+revoke execute on function public.reserve_order_stock(jsonb) from public, anon, authenticated;
+grant execute on function public.reserve_order_stock(jsonb) to service_role;
+
+revoke execute on function public.restore_order_stock(jsonb) from public, anon, authenticated;
+grant execute on function public.restore_order_stock(jsonb) to service_role;
+
+-- 8. Orders Security Enhancements
+-- Receipt token for privacy-safe guest order lookups (prevents IDOR order enumeration)
+alter table public.orders add column if not exists receipt_token text;
+create index if not exists idx_orders_receipt_token on public.orders (receipt_token);

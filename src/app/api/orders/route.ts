@@ -1,15 +1,33 @@
 import { NextResponse } from "next/server";
 import type { Order } from "@/lib/orders";
-import { getStoreOrdersByCustomer, recordCustomerOrder } from "@/lib/server/store-repository";
+import {
+  getStoreOrdersByCustomer,
+  normalizePhoneForMatch,
+  recordCustomerOrder,
+} from "@/lib/server/store-repository";
 import { sendOrderConfirmationEmail, sendAdminNewOrderNotification } from "@/lib/server/email";
 import { getAdminSession } from "@/lib/server/admin-auth";
 import { getCustomerSession } from "@/lib/server/customer-auth";
 import { checkRateLimit, getClientIp } from "@/lib/server/rate-limiter";
 
+function maskName(name: string): string {
+  if (!name) return "";
+  const parts = name.trim().split(/\s+/);
+  return parts.map((p) => (p.length <= 1 ? p : `${p[0]}***`)).join(" ");
+}
+
+function maskPhone(phone: string): string {
+  if (!phone) return "";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length <= 4) return "****";
+  return digits.slice(0, 3) + "****" + digits.slice(-3);
+}
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const rawIds = searchParams.get("ids") ?? "";
+    const rawTokens = searchParams.get("tokens") ?? searchParams.get("token") ?? "";
     const requestedPhone = searchParams.get("phone")?.trim() ?? undefined;
     const requestedEmail = searchParams.get("email")?.trim().toLowerCase() ?? undefined;
 
@@ -17,6 +35,13 @@ export async function GET(request: Request) {
       .split(",")
       .map((id) => id.trim())
       .filter(Boolean);
+
+    const tokenSet = new Set(
+      rawTokens
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+    );
 
     // Verify session permissions to prevent unauthorized IDOR scraping of customer addresses & orders
     const [adminSession, customerSession] = await Promise.all([
@@ -27,6 +52,7 @@ export async function GET(request: Request) {
     let allowedPhone = requestedPhone;
     let allowedEmail = requestedEmail;
     let allowedIds = ids;
+    const isGuest = !adminSession && !customerSession;
 
     if (adminSession) {
       // Super Administrator has permission to view requested customer records
@@ -35,8 +61,7 @@ export async function GET(request: Request) {
       allowedPhone = customerSession.phone;
       allowedEmail = customerSession.email || requestedEmail;
     } else {
-      // Guest visitors can only query specific order IDs that exist in their local checkout receipt
-      // Reject any open queries by arbitrary phone numbers or emails without authentication
+      // Guest visitors can only query specific order IDs
       if (ids.length === 0) {
         return NextResponse.json(
           { ok: false, error: "Please log in to query order history by phone or email." },
@@ -52,12 +77,45 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: true, orders: [] });
     }
 
-    const orders = await getStoreOrdersByCustomer({
+    const rawOrders = await getStoreOrdersByCustomer({
       ids: allowedIds,
       phone: allowedPhone,
       email: allowedEmail,
     });
-    return NextResponse.json({ ok: true, orders });
+
+    // If guest: enforce receipt token or phone verification to protect customer PII from enumeration
+    const sanitizedOrders = rawOrders.map((order) => {
+      if (!isGuest) {
+        return order;
+      }
+
+      const hasValidToken = Boolean(order.receiptToken && tokenSet.has(order.receiptToken));
+      const hasMatchingPhone = Boolean(
+        requestedPhone &&
+          order.customer?.phone &&
+          normalizePhoneForMatch(order.customer.phone) === normalizePhoneForMatch(requestedPhone),
+      );
+
+      if (hasValidToken || hasMatchingPhone) {
+        return order;
+      }
+
+      // Unauthenticated visitor with guessed order ID: mask customer PII
+      return {
+        ...order,
+        receiptToken: undefined,
+        customer: {
+          name: maskName(order.customer.name),
+          phone: maskPhone(order.customer.phone),
+          email: undefined,
+          address: "Protected for customer privacy",
+          city: order.customer.city,
+          notes: undefined,
+        },
+      };
+    });
+
+    return NextResponse.json({ ok: true, orders: sanitizedOrders });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to retrieve orders.";
     return NextResponse.json({ error: message }, { status: 500 });

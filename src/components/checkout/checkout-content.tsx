@@ -30,7 +30,7 @@ import { announceNotice } from "@/components/ui/coming-soon";
 import { clearCartProducts, useCartProducts } from "@/lib/cart-products";
 import { loginUserAsync, signupUserAsync, useAuth } from "@/lib/auth";
 import {
-  placeOrder,
+  placeOrderAsync,
   syncCustomerOrders,
   useOrders,
   type Order,
@@ -116,6 +116,7 @@ export function CheckoutContent({
   const effectiveAddress = address ?? user?.address ?? "";
 
   const [orderError, setOrderError] = useState("");
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
 
   const rows = items.flatMap((item) => {
     const product =
@@ -566,8 +567,9 @@ export function CheckoutContent({
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSubmittingOrder) return;
     setOrderError("");
     if (!rows.length) return;
 
@@ -580,57 +582,72 @@ export function CheckoutContent({
       return;
     }
 
-    const { order } = placeOrder({
-      customer: {
-        name: effectiveName.trim(),
-        phone: effectivePhone.trim(),
-        email: effectiveEmail.trim() || undefined,
-        address: effectiveAddress.trim(),
-        city: effectiveCity.trim(),
-        notes: notes.trim() || undefined,
-      },
-      deliveryZone,
-      paymentMethod,
-      paymentPhone: paymentMethod !== "cod" && paymentPhone.trim() ? paymentPhone.trim() : undefined,
-      items: rows.map(({ product, quantity, colour }) => ({
-        id: product.id,
-        slug: product.slug,
-        name: product.name,
-        price: product.price,
-        quantity,
-        colour,
-        photo: { src: product.photo.src, alt: product.photo.alt },
-      })),
-      subtotal,
-      discountAmount,
-      couponCode: appliedCoupon?.code ?? null,
-      shippingFee,
-      total,
-      status: "Pending",
-    });
+    setIsSubmittingOrder(true);
+    try {
+      const result = await placeOrderAsync({
+        customer: {
+          name: effectiveName.trim(),
+          phone: effectivePhone.trim(),
+          email: effectiveEmail.trim() || undefined,
+          address: effectiveAddress.trim(),
+          city: effectiveCity.trim(),
+          notes: notes.trim() || undefined,
+        },
+        deliveryZone,
+        paymentMethod,
+        paymentPhone: paymentMethod !== "cod" && paymentPhone.trim() ? paymentPhone.trim() : undefined,
+        items: rows.map(({ product, quantity, colour }) => ({
+          id: product.id,
+          slug: product.slug,
+          name: product.name,
+          price: product.price,
+          quantity,
+          colour,
+          photo: { src: product.photo.src, alt: product.photo.alt },
+        })),
+        subtotal,
+        discountAmount,
+        couponCode: appliedCoupon?.code ?? null,
+        shippingFee,
+        total,
+        status: "Pending",
+      });
 
-    // Meta Pixel: Track Purchase with order ID and value
-    trackPurchase({
-      id: order.id,
-      total: order.total,
-      itemsCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
-    });
+      if (!result.ok) {
+        setOrderError(result.error);
+        setIsSubmittingOrder(false);
+        return;
+      }
 
-    clearCartProducts();
-    setConfirmedOrder(order);
-    if (!user) {
-      setAuthModalMode("signup");
-      setModalIdentifier(order.customer.phone);
-      setModalError("");
-      setShowAuthModal(true);
+      const order = result.order;
+
+      // Meta Pixel: Track Purchase with order ID and value
+      trackPurchase({
+        id: order.id,
+        total: order.total,
+        itemsCount: order.items.reduce((sum, item) => sum + item.quantity, 0),
+      });
+
+      clearCartProducts();
+      setConfirmedOrder(order);
+      if (!user) {
+        setAuthModalMode("signup");
+        setModalIdentifier(order.customer.phone);
+        setModalError("");
+        setShowAuthModal(true);
+      }
+      announceNotice(
+        "Order received",
+        user
+          ? `Order ${order.id} has been placed and is pending verification.`
+          : `Order ${order.id} placed! You can optionally save an account to track your order.`,
+      );
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      setOrderError("An unexpected error occurred while placing your order. Please try again.");
+    } finally {
+      setIsSubmittingOrder(false);
     }
-    announceNotice(
-      "Order received",
-      user
-        ? `Order ${order.id} has been placed and is pending verification.`
-        : `Order ${order.id} placed! You can optionally save an account to track your order.`,
-    );
-    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   return (
@@ -954,9 +971,13 @@ export function CheckoutContent({
         <button
           type="submit"
           className="checkout-primary checkout-submit"
-          disabled={Boolean(stockIssue)}
+          disabled={Boolean(stockIssue) || isSubmittingOrder}
         >
-          {stockIssue ? "Adjust Stock in Bag to Order" : `Place Order · ${formatPrice(total)}`}
+          {isSubmittingOrder
+            ? "Placing Order..."
+            : stockIssue
+              ? "Adjust Stock in Bag to Order"
+              : `Place Order · ${formatPrice(total)}`}
         </button>
 
         <Link href="/cart" className="checkout-back-link">
