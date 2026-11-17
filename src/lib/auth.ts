@@ -410,12 +410,17 @@ export async function requestPasswordResetAsync(email: string): Promise<{
 export async function resetPasswordWithTokenAsync(
   tokenOrCode: string,
   newPassword: string,
+  email?: string,
 ): Promise<{ ok: boolean; message: string; email?: string }> {
   try {
     const res = await fetch("/api/auth/reset-password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tokenOrCode: tokenOrCode.trim(), newPassword }),
+      body: JSON.stringify({
+        tokenOrCode: tokenOrCode.trim(),
+        newPassword,
+        email: email?.trim().toLowerCase(),
+      }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) {

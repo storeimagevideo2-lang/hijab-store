@@ -9,7 +9,9 @@ import { resetPasswordWithTokenAsync } from "@/lib/auth";
 export function ResetPasswordForm() {
   const searchParams = useSearchParams();
   const initialToken = searchParams.get("token") || searchParams.get("code") || "";
+  const initialEmail = searchParams.get("email") || "";
 
+  const [email, setEmail] = useState(initialEmail);
   const [tokenOrCode, setTokenOrCode] = useState(initialToken);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -23,7 +25,14 @@ export function ResetPasswordForm() {
     e.preventDefault();
     setError("");
 
+    const cleanEmail = email.trim().toLowerCase();
     const cleanToken = tokenOrCode.trim();
+
+    if (!cleanEmail || !cleanEmail.includes("@")) {
+      setError("Please provide your account email address.");
+      return;
+    }
+
     if (!cleanToken) {
       setError("Please provide the reset token or 6-digit verification code from your email.");
       return;
@@ -41,7 +50,7 @@ export function ResetPasswordForm() {
 
     setSubmitting(true);
     try {
-      const result = await resetPasswordWithTokenAsync(cleanToken, newPassword);
+      const result = await resetPasswordWithTokenAsync(cleanToken, newPassword, cleanEmail);
       if (!result.ok) {
         setError(result.message);
         return;
@@ -113,6 +122,25 @@ export function ResetPasswordForm() {
         </p>
 
         <form onSubmit={handleSubmit} className="auth-form-fields">
+          <div className="auth-field">
+            <label htmlFor="reset-email-input">Account Email Address *</label>
+            <input
+              id="reset-email-input"
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="e.g. yourname@example.com"
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                setError("");
+              }}
+            />
+            <span style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+              The email address associated with your NOOR customer account.
+            </span>
+          </div>
+
           <div className="auth-field">
             <label htmlFor="reset-token-input">Verification Code or Reset Token *</label>
             <input

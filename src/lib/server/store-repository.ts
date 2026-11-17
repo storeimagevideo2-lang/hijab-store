@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -460,6 +460,7 @@ export type CustomerAccountRecord = {
   resetToken?: string | null;
   resetCode?: string | null;
   resetExpiresAt?: string | null;
+  resetAttempts?: number;
   createdAt: string;
 };
 
@@ -3556,6 +3557,17 @@ export async function changeCustomerAccountPassword(input: {
   return { ok: true };
 }
 
+function safeConstantTimeCompare(a: string, b: string): boolean {
+  try {
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    if (bufA.length !== bufB.length) return false;
+    return timingSafeEqual(bufA, bufB);
+  } catch {
+    return false;
+  }
+}
+
 export async function createPasswordResetRequest(rawEmail: string): Promise<
   | { ok: true; token: string; code: string; email: string; name: string }
   | { ok: false; error: string }
@@ -3578,7 +3590,7 @@ export async function createPasswordResetRequest(rawEmail: string): Promise<
 
   const account = accounts[idx];
   const token = randomBytes(32).toString("hex");
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = randomInt(100000, 1000000).toString();
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
   accounts[idx] = {
@@ -3586,6 +3598,7 @@ export async function createPasswordResetRequest(rawEmail: string): Promise<
     resetToken: token,
     resetCode: code,
     resetExpiresAt: expiresAt,
+    resetAttempts: 0,
   };
 
   await saveCustomerAccounts(local, accounts);
@@ -3599,40 +3612,111 @@ export async function createPasswordResetRequest(rawEmail: string): Promise<
   };
 }
 
-export async function verifyPasswordResetTokenOrCode(tokenOrCode: string): Promise<
-  | { ok: true; email: string; name: string }
-  | { ok: false; error: string }
-> {
+export async function verifyPasswordResetTokenOrCode(
+  tokenOrCode: string,
+  email?: string,
+): Promise<{ ok: true; email: string; name: string } | { ok: false; error: string }> {
   const clean = tokenOrCode.trim();
   if (!clean) return { ok: false, error: "Reset token or code is required." };
 
+  const cleanEmail = email?.trim().toLowerCase();
+  if (clean.length < 32 && !cleanEmail) {
+    return {
+      ok: false,
+      error: "Please provide your account email address along with the 6-digit verification code.",
+    };
+  }
+
+  const local = await readLocalStore();
   const accounts = await getCustomerAccounts();
   const now = Date.now();
 
-  const match = accounts.find(
-    (u) =>
-      (u.resetToken === clean || u.resetCode === clean) &&
-      u.resetExpiresAt &&
-      new Date(u.resetExpiresAt).getTime() > now,
-  );
+  let idx = -1;
+  if (cleanEmail) {
+    idx = accounts.findIndex((u) => u.email && u.email.toLowerCase() === cleanEmail);
+  } else {
+    idx = accounts.findIndex(
+      (u) =>
+        u.resetToken &&
+        safeConstantTimeCompare(u.resetToken, clean) &&
+        u.resetExpiresAt &&
+        new Date(u.resetExpiresAt).getTime() > now,
+    );
+  }
 
-  if (!match) {
+  if (idx < 0) {
     return {
       ok: false,
       error: "This reset link or verification code is invalid or has expired.",
     };
   }
 
+  const account = accounts[idx];
+  if (!account.resetExpiresAt || new Date(account.resetExpiresAt).getTime() <= now) {
+    return {
+      ok: false,
+      error: "This reset link or verification code has expired. Please request a new one.",
+    };
+  }
+
+  const currentAttempts = account.resetAttempts || 0;
+  if (currentAttempts >= 5) {
+    accounts[idx] = {
+      ...account,
+      resetToken: null,
+      resetCode: null,
+      resetExpiresAt: null,
+      resetAttempts: 0,
+    };
+    await saveCustomerAccounts(local, accounts);
+    return {
+      ok: false,
+      error: "Too many failed attempts. For your security, this verification code has been deactivated. Please request a new one.",
+    };
+  }
+
+  const matchToken = account.resetToken ? safeConstantTimeCompare(account.resetToken, clean) : false;
+  const matchCode = account.resetCode ? safeConstantTimeCompare(account.resetCode, clean) : false;
+
+  if (!matchToken && !matchCode) {
+    const newAttempts = currentAttempts + 1;
+    if (newAttempts >= 5) {
+      accounts[idx] = {
+        ...account,
+        resetToken: null,
+        resetCode: null,
+        resetExpiresAt: null,
+        resetAttempts: 0,
+      };
+      await saveCustomerAccounts(local, accounts);
+      return {
+        ok: false,
+        error: "Too many failed attempts. For your security, this verification code has been deactivated. Please request a new one.",
+      };
+    }
+
+    accounts[idx] = {
+      ...account,
+      resetAttempts: newAttempts,
+    };
+    await saveCustomerAccounts(local, accounts);
+    return {
+      ok: false,
+      error: `Invalid verification code or link. ${5 - newAttempts} attempt(s) remaining before deactivation.`,
+    };
+  }
+
   return {
     ok: true,
-    email: match.email || "",
-    name: match.name,
+    email: account.email || cleanEmail || "",
+    name: account.name,
   };
 }
 
 export async function resetCustomerPassword(
   tokenOrCode: string,
   newPassword: string,
+  email?: string,
 ): Promise<{ ok: true; email: string; name: string } | { ok: false; error: string }> {
   const clean = tokenOrCode.trim();
   if (!clean) return { ok: false, error: "Reset token or code is required." };
@@ -3640,38 +3724,107 @@ export async function resetCustomerPassword(
     return { ok: false, error: "New password must be at least 8 characters long." };
   }
 
+  const cleanEmail = email?.trim().toLowerCase();
+  if (clean.length < 32 && !cleanEmail) {
+    return {
+      ok: false,
+      error: "Please provide your account email address along with the 6-digit verification code.",
+    };
+  }
+
   const local = await readLocalStore();
   const accounts = await getCustomerAccounts();
   const now = Date.now();
 
-  const idx = accounts.findIndex(
-    (u) =>
-      (u.resetToken === clean || u.resetCode === clean) &&
-      u.resetExpiresAt &&
-      new Date(u.resetExpiresAt).getTime() > now,
-  );
+  let idx = -1;
+  if (cleanEmail) {
+    idx = accounts.findIndex((u) => u.email && u.email.toLowerCase() === cleanEmail);
+  } else {
+    idx = accounts.findIndex(
+      (u) =>
+        u.resetToken &&
+        safeConstantTimeCompare(u.resetToken, clean) &&
+        u.resetExpiresAt &&
+        new Date(u.resetExpiresAt).getTime() > now,
+    );
+  }
 
   if (idx < 0) {
+    return {
+      ok: false,
+      error: "This reset link or verification code is invalid or has expired.",
+    };
+  }
+
+  const account = accounts[idx];
+  if (!account.resetExpiresAt || new Date(account.resetExpiresAt).getTime() <= now) {
     return {
       ok: false,
       error: "This reset link or verification code has expired. Please request a new one.",
     };
   }
 
-  const account = accounts[idx];
+  const currentAttempts = account.resetAttempts || 0;
+  if (currentAttempts >= 5) {
+    accounts[idx] = {
+      ...account,
+      resetToken: null,
+      resetCode: null,
+      resetExpiresAt: null,
+      resetAttempts: 0,
+    };
+    await saveCustomerAccounts(local, accounts);
+    return {
+      ok: false,
+      error: "Too many failed attempts. For your security, this verification code has been deactivated. Please request a new one.",
+    };
+  }
+
+  const matchToken = account.resetToken ? safeConstantTimeCompare(account.resetToken, clean) : false;
+  const matchCode = account.resetCode ? safeConstantTimeCompare(account.resetCode, clean) : false;
+
+  if (!matchToken && !matchCode) {
+    const newAttempts = currentAttempts + 1;
+    if (newAttempts >= 5) {
+      accounts[idx] = {
+        ...account,
+        resetToken: null,
+        resetCode: null,
+        resetExpiresAt: null,
+        resetAttempts: 0,
+      };
+      await saveCustomerAccounts(local, accounts);
+      return {
+        ok: false,
+        error: "Too many failed attempts. For your security, this verification code has been deactivated. Please request a new one.",
+      };
+    }
+
+    accounts[idx] = {
+      ...account,
+      resetAttempts: newAttempts,
+    };
+    await saveCustomerAccounts(local, accounts);
+    return {
+      ok: false,
+      error: `Invalid verification code or link. ${5 - newAttempts} attempt(s) remaining before deactivation.`,
+    };
+  }
+
   accounts[idx] = {
     ...account,
     password: hashCustomerPassword(newPassword),
     resetToken: null,
     resetCode: null,
     resetExpiresAt: null,
+    resetAttempts: 0,
   };
 
   await saveCustomerAccounts(local, accounts);
 
   return {
     ok: true,
-    email: account.email || "",
+    email: account.email || cleanEmail || "",
     name: account.name,
   };
 }

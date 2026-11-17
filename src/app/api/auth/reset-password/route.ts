@@ -17,12 +17,13 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const token = searchParams.get("token") || searchParams.get("code") || "";
+  const email = searchParams.get("email") || undefined;
 
   if (!token) {
     return NextResponse.json({ ok: false, error: "Missing token or verification code." }, { status: 400 });
   }
 
-  const result = await verifyPasswordResetTokenOrCode(token);
+  const result = await verifyPasswordResetTokenOrCode(token, email);
   if (!result.ok) {
     return NextResponse.json({ ok: false, error: result.error }, { status: 400 });
   }
@@ -43,10 +44,12 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json().catch(() => ({}))) as {
       tokenOrCode?: string;
+      email?: string;
       newPassword?: string;
     };
 
     const tokenOrCode = body.tokenOrCode?.trim();
+    const email = body.email?.trim().toLowerCase();
     const newPassword = body.newPassword;
 
     if (!tokenOrCode) {
@@ -63,7 +66,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const resetResult = await resetCustomerPassword(tokenOrCode, newPassword);
+    const resetResult = await resetCustomerPassword(tokenOrCode, newPassword, email);
     if (!resetResult.ok) {
       return NextResponse.json({ ok: false, error: resetResult.error }, { status: 400 });
     }

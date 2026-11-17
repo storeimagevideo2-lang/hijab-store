@@ -145,13 +145,10 @@ create policy "Public can view products"
   to anon, authenticated
   using (true);
 
--- Customers (including guest checkout) can create orders
+-- Ensure anon/authenticated cannot insert orders directly into Supabase.
+-- All orders must go through the Next.js server-side endpoint (/api/orders)
+-- which performs price validation, coupon verification, and inventory checks using the service_role key.
 drop policy if exists "Anyone can place orders" on public.orders;
-create policy "Anyone can place orders"
-  on public.orders
-  for insert
-  to anon, authenticated
-  with check (true);
 
 -- Public can view approved reviews
 drop policy if exists "Public can view approved reviews" on public.reviews;
@@ -161,10 +158,7 @@ create policy "Public can view approved reviews"
   to anon, authenticated
   using (status = 'approved');
 
--- Customers can submit reviews
+-- Ensure anon/authenticated cannot insert reviews directly into Supabase.
+-- All reviews must go through the Next.js server-side endpoint (/api/reviews)
+-- which enforces verified purchase checks and moderation status using the service_role key.
 drop policy if exists "Anyone can submit reviews" on public.reviews;
-create policy "Anyone can submit reviews"
-  on public.reviews
-  for insert
-  to anon, authenticated
-  with check (true);

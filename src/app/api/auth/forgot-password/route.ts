@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       const protocol = cleanHost.includes("localhost") || cleanHost.startsWith("127.") ? "http" : "https";
       baseUrl = `${protocol}://${cleanHost}`;
     }
-    const resetUrl = `${baseUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(resetReq.token)}`;
+    const resetUrl = `${baseUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(resetReq.token)}&email=${encodeURIComponent(resetReq.email)}`;
 
     const emailResult = await sendPasswordResetEmail({
       to: resetReq.email,
