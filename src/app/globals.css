@@ -31,7 +31,9 @@
   --bottom-nav-height: 76px;
   --bg: var(--page);
   --surface-strong: var(--surface-soft);
+  --surface-sunken: var(--surface-soft);
   --accent: var(--brand);
+  --accent-strong: var(--brand);
   --accent-soft: var(--surface-soft);
   color-scheme: light;
 }
@@ -59,7 +61,9 @@
   --notice-mark: #1d3f6a;
   --bg: var(--page);
   --surface-strong: var(--surface-soft);
+  --surface-sunken: var(--surface-soft);
   --accent: var(--brand);
+  --accent-strong: var(--brand);
   --accent-soft: var(--surface-warm);
   color-scheme: dark;
 }
@@ -67,6 +71,11 @@
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 24px; scroll-padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom) + 16px); }
 body { margin: 0; background: var(--page); color: var(--ink); font-family: Arial, Helvetica, sans-serif; -webkit-font-smoothing: antialiased; }
+select option,
+select optgroup {
+  background-color: var(--surface);
+  color: var(--ink);
+}
 html.theme-transitioning,
 html.theme-transitioning body,
 html.theme-transitioning header,

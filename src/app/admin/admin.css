@@ -342,13 +342,60 @@
 }
 
 .adm-date-select {
-  background: transparent;
+  background: var(--page);
   color: var(--ink);
   font-size: 12.5px;
   font-weight: 600;
   border: 0;
   padding: 4px 2px;
   cursor: pointer;
+}
+
+.adm-date-select option,
+.adm-select option,
+.adm-select-sm option,
+.adm-shell select option,
+.adm-shell select optgroup,
+.adm-modal select option,
+.adm-modal select optgroup {
+  background-color: var(--surface);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .adm-shell select,
+:root[data-theme="dark"] .adm-modal select,
+:root[data-theme="dark"] .adm-shell input[type="date"],
+:root[data-theme="dark"] .adm-modal input[type="date"] {
+  color-scheme: dark;
+}
+
+.adm-verify-alert {
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.adm-verify-alert.is-success {
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: #166534;
+}
+
+.adm-verify-alert.is-error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #991b1b;
+}
+
+:root[data-theme="dark"] .adm-verify-alert.is-success {
+  color: #86efac;
+}
+
+:root[data-theme="dark"] .adm-verify-alert.is-error {
+  color: #fca5a5;
 }
 
 .adm-custom-dates {

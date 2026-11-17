@@ -7167,7 +7167,7 @@ export function AdminDashboard({
                 {/* Verification & Live Connection Toolbar */}
                 <div
                   style={{
-                    background: "var(--surface-sunken, #f8fafc)",
+                    background: "var(--surface-soft)",
                     borderRadius: 10,
                     padding: "16px 18px",
                     border: "1px solid var(--line)",
@@ -7228,17 +7228,7 @@ export function AdminDashboard({
                   {/* Verification Result Feedback Alert */}
                   {fbVerifyResult && (
                     <div
-                      style={{
-                        padding: "12px 14px",
-                        borderRadius: 8,
-                        fontSize: 12,
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: 10,
-                        background: fbVerifyResult.ok ? "rgba(34, 197, 94, 0.12)" : "rgba(239, 68, 68, 0.12)",
-                        border: `1px solid ${fbVerifyResult.ok ? "rgba(34, 197, 94, 0.3)" : "rgba(239, 68, 68, 0.3)"}`,
-                        color: fbVerifyResult.ok ? "#166534" : "#991b1b",
-                      }}
+                      className={`adm-verify-alert ${fbVerifyResult.ok ? "is-success" : "is-error"}`}
                     >
                       {fbVerifyResult.ok ? (
                         <CheckCircle2 size={16} style={{ flexShrink: 0, marginTop: 1 }} />
@@ -8468,14 +8458,14 @@ export function AdminDashboard({
                         href={`mailto:${selectedContactMessage.contact}?subject=${encodeURIComponent(
                           `Re: ${selectedContactMessage.topic}`,
                         )}`}
-                        style={{ color: "var(--adm-accent)", textDecoration: "underline" }}
+                        style={{ color: "var(--link)", textDecoration: "underline" }}
                       >
                         {selectedContactMessage.contact}
                       </a>
                     ) : (
                       <a
                         href={`tel:${selectedContactMessage.contact}`}
-                        style={{ color: "var(--adm-accent)", textDecoration: "underline" }}
+                        style={{ color: "var(--link)", textDecoration: "underline" }}
                       >
                         {selectedContactMessage.contact}
                       </a>
@@ -8499,8 +8489,8 @@ export function AdminDashboard({
                     marginTop: 8,
                     padding: "12px 14px",
                     borderRadius: 10,
-                    background: "rgba(255, 255, 255, 0.03)",
-                    border: "1px solid var(--adm-border)",
+                    background: "var(--surface-soft)",
+                    border: "1px solid var(--line)",
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                     fontSize: 14,
